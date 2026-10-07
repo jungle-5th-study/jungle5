@@ -438,7 +438,7 @@ jungle5/
 ### 9.2 CI/CD (GitHub Actions)
 
 - **ci.yml (PR):** `tsc --noEmit`, ESLint, Vitest(API 통합 테스트).
-- main 보호 규칙: PR 필수, 메인테이너 1명 승인, `ci` 통과, 강제 push 금지 (D-26). 비공개 저장소였을 때는 무료 요금제라 쓸 수 없었고, 공개 전환(D-25)으로 가능해졌다. deploy.yml의 배포 작업도 테스트 성공을 조건(`needs: test`)으로 한다. 문서만 바뀐 push는 배포를 건너뛴다.
+- main 보호 규칙: PR 필수, 메인테이너 1명 승인, `ci` 통과, 강제 push·삭제 금지 (D-26). 저장소 ruleset "main 보호 (D-26)"로 설정하고, `release-owner` 팀(소유자)만 예외로 직접 push할 수 있다. 비공개 저장소였을 때는 무료 요금제라 쓸 수 없었고, 공개 전환(D-25)으로 가능해졌다. deploy.yml의 배포 작업도 테스트 성공을 조건(`needs: test`)으로 한다. 문서만 바뀐 push는 배포를 건너뛴다.
 - **deploy.yml (main push):** ① 테스트 재실행 → ② 배포 직전 D1 Time Travel 복구 지점 기록 → ③ `wrangler d1 migrations apply jungle5-prod --remote` → ④ `wrangler deploy`.
 - 마이그레이션은 **추가만 하는 변경**(컬럼·테이블 추가)을 원칙으로 한다. 컬럼 삭제·이름 변경은 두 번의 배포로 나눈다.
 
