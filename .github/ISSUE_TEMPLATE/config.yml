@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discord 커뮤니티 포럼
+    # 커뮤니티 서버 링크. 포럼 채널 링크(.../<채널 ID>)로 바꾸면 더 좋다.
+    url: https://discord.com/channels/1272414440989392967
+    about: 제안과 질문은 Discord 포럼에서 먼저 이야기한다. 운영진이 "이슈화" 태그를 붙이면 이슈가 만들어진다.

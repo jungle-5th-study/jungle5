@@ -1,0 +1,86 @@
+# TSD 9.2 — on merge to main: test → record a D1 Time Travel bookmark →
+# apply migrations (remote) → deploy. Failures are posted to the ops webhook.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  D1_NAME: jungle5-prod
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Record D1 Time Travel bookmark (restore point before migrations)
+        id: bookmark
+        run: |
+          info=$(pnpm exec wrangler d1 time-travel info "$D1_NAME" --json)
+          bookmark=$(echo "$info" | jq -r '.bookmark')
+          echo "bookmark=$bookmark" >> "$GITHUB_OUTPUT"
+          {
+            echo "### D1 restore point"
+            echo "Bookmark before deploy of \`${GITHUB_SHA::7}\`: \`$bookmark\`"
+            echo
+            echo "Restore: \`wrangler d1 time-travel restore $D1_NAME --bookmark=$bookmark\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply migrations (remote)
+        run: pnpm exec wrangler d1 migrations apply "$D1_NAME" --remote
+
+      - name: Build
+        run: pnpm build
+
+      - name: Deploy
+        run: pnpm exec wrangler deploy
+
+      - name: Notify failure
+        if: failure()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          BOOKMARK: ${{ steps.bookmark.outputs.bookmark }}
+        run: |
+          [ -z "$ALERT_WEBHOOK_URL" ] && exit 0
+          msg="[jungle5] 배포 실패: ${GITHUB_SHA::7} — ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          [ -n "$BOOKMARK" ] && msg="$msg (D1 bookmark: $BOOKMARK)"
+          jq -n --arg c "$msg" '{content: $c, allowed_mentions: {parse: []}}' |
+            curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$ALERT_WEBHOOK_URL"
+
+  notify-test-failure:
+    needs: test
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify failure
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          [ -z "$ALERT_WEBHOOK_URL" ] && exit 0
+          msg="[jungle5] 배포 중단 (테스트 실패): ${GITHUB_SHA::7} — ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          jq -n --arg c "$msg" '{content: $c, allowed_mentions: {parse: []}}' |
+            curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$ALERT_WEBHOOK_URL"

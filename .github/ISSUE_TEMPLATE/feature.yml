@@ -1,0 +1,34 @@
+name: 기능 제안
+description: 새 기능이나 바꾸고 싶은 동작을 제안한다
+title: "[제안] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        큰 기능은 Discord 포럼에서 먼저 이야기하면 빠르다. 운영진이 "이슈화" 태그를 붙이면 이슈가 자동으로 만들어진다.
+  - type: textarea
+    id: problem
+    attributes:
+      label: 문제
+      description: 지금 무엇이 불편하거나 안 되는가. 누가 언제 겪는가.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 제안
+      description: 어떻게 바뀌면 좋겠는가. 화면이나 흐름으로 적어도 된다.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 대안
+      description: 생각해 본 다른 방법, 또는 지금 쓰는 우회 방법.
+  - type: input
+    id: discord
+    attributes:
+      label: 관련 Discord 링크
+      description: 논의한 포럼 글이나 메시지 링크.
+      placeholder: https://discord.com/channels/...

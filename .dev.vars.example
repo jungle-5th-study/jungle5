@@ -1,0 +1,18 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
+# Values here override the "vars" block in wrangler.jsonc during local dev.
+
+# "test" enables POST /auth/test-login (local only, never in production).
+ENV=test
+APP_ORIGIN=http://localhost:8787
+
+# Discord application (use a separate dev application for local OAuth).
+DISCORD_CLIENT_ID=000000000000000000
+DISCORD_CLIENT_SECRET=replace-me
+DISCORD_GUILD_ID=000000000000000000
+DISCORD_ADMIN_ROLE_ID=000000000000000000
+
+# AES-256 key, base64. Generate: openssl rand -base64 32
+TOKEN_ENC_KEY=replace-with-openssl-rand-base64-32
+
+# Discord webhook for the private ops channel. Leave empty to disable alerts.
+ALERT_WEBHOOK_URL=

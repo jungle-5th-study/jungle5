@@ -1,0 +1,46 @@
+name: 버그
+description: 사이트가 기대와 다르게 동작한다
+title: "[버그] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        보안 문제는 여기에 올리지 말고 SECURITY.md의 방법으로 비공개로 알린다. 다른 회원의 개인 정보나 글 내용이 드러나지 않게 적는다.
+  - type: textarea
+    id: steps
+    attributes:
+      label: 재현 절차
+      description: 처음부터 순서대로 적는다.
+      placeholder: |
+        1. 스터디 화면에서 ...
+        2. ... 버튼을 누른다
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 기대한 동작
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 실제 동작
+      description: 오류 문구나 스크린샷이 있으면 붙인다.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 환경
+      description: 기기, 운영체제, 브라우저와 버전, 운영 사이트인지 로컬인지, 운영자 여부.
+      placeholder: 예) macOS 15, Chrome 140, jungle5.xyz, 일반 멤버
+    validations:
+      required: true
+  - type: input
+    id: discord
+    attributes:
+      label: 관련 Discord 링크
+      placeholder: https://discord.com/channels/...

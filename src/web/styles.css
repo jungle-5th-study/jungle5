@@ -1,0 +1,239 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens (docs/ui.md 3.2). Components use only these semantic colors;
+ * the default Tailwind palette is removed so raw colors cannot creep back in.
+ *
+ * Theme (UD-04): light by default, dark when the OS prefers it, unless the
+ * member picked one (html[data-theme], set by lib/theme.ts from localStorage).
+ */
+:root {
+  color-scheme: light;
+  --j-bg: #ffffff;
+  --j-surface: #f7f8f9;
+  --j-border: #e5e7eb;
+  --j-text: #111827;
+  --j-muted: #6b7280;
+  --j-primary: #037d4e;
+  --j-primary-hover: #025334;
+  --j-on-primary: #ffffff;
+  --j-link: #037d4e;
+  --j-accent: #05d182;
+  --j-accent-subtle: #e6faf4;
+  --j-accent-subtle-text: #037d4e;
+  --j-danger: #b42318;
+  --j-scrim: rgb(17 24 39 / 0.45);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --j-bg: #0e1a1f;
+    --j-surface: #13252c;
+    --j-border: #22363e;
+    --j-text: #e6edef;
+    --j-muted: #94a3ab;
+    --j-primary: #05d182;
+    --j-primary-hover: #33d7a7;
+    --j-on-primary: #09323d;
+    --j-link: #33d7a7;
+    --j-accent: #05d182;
+    --j-accent-subtle: #12352f;
+    --j-accent-subtle-text: #33d7a7;
+    --j-danger: #f97066;
+    --j-scrim: rgb(0 0 0 / 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --j-bg: #0e1a1f;
+  --j-surface: #13252c;
+  --j-border: #22363e;
+  --j-text: #e6edef;
+  --j-muted: #94a3ab;
+  --j-primary: #05d182;
+  --j-primary-hover: #33d7a7;
+  --j-on-primary: #09323d;
+  --j-link: #33d7a7;
+  --j-accent: #05d182;
+  --j-accent-subtle: #12352f;
+  --j-accent-subtle-text: #33d7a7;
+  --j-danger: #f97066;
+  --j-scrim: rgb(0 0 0 / 0.6);
+}
+
+@theme {
+  --color-*: initial;
+  --shadow-*: initial;
+  --font-sans: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif;
+  /* Only the mobile floating write button has a shadow (3.3). */
+  --shadow-fab: 0 4px 12px rgb(3 125 78 / 0.3);
+}
+
+@theme inline {
+  --color-bg: var(--j-bg);
+  --color-surface: var(--j-surface);
+  --color-border: var(--j-border);
+  --color-text: var(--j-text);
+  --color-muted: var(--j-muted);
+  --color-primary: var(--j-primary);
+  --color-primary-hover: var(--j-primary-hover);
+  --color-on-primary: var(--j-on-primary);
+  --color-link: var(--j-link);
+  --color-accent: var(--j-accent);
+  --color-accent-subtle: var(--j-accent-subtle);
+  --color-accent-subtle-text: var(--j-accent-subtle-text);
+  --color-danger: var(--j-danger);
+  --color-scrim: var(--j-scrim);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* Reserve the scrollbar so pages of different heights do not shift. */
+    scrollbar-gutter: stable;
+  }
+  body {
+    @apply bg-bg font-sans text-base leading-[1.7] text-text antialiased;
+  }
+  ::placeholder {
+    @apply text-muted opacity-100;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@keyframes j-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes j-drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
+@layer components {
+  /* The "●" of the wordmark "정글●5" (UD-10): a small CSS dot at x-height, not a glyph. */
+  .wordmark-dot {
+    display: inline-block;
+    width: 0.34em;
+    height: 0.34em;
+    margin: 0 0.12em;
+    border-radius: 9999px;
+    background: var(--j-accent);
+    vertical-align: middle;
+    position: relative;
+    top: -0.06em;
+  }
+  /* Category tabs: scroll sideways without a visible scrollbar; fade the cut edge. */
+  .tabs-scroll {
+    scrollbar-width: none;
+  }
+  .tabs-scroll::-webkit-scrollbar {
+    display: none;
+  }
+  .tabs-fade-right {
+    mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  }
+  .tabs-fade-left {
+    mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+  }
+  .tabs-fade-left.tabs-fade-right {
+    mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+  }
+  .anim-toast {
+    animation: j-toast-in 160ms ease-out;
+  }
+  .anim-drawer {
+    animation: j-drawer-in 180ms ease-out;
+  }
+
+  /* Rendered Markdown (no typography plugin; keeps the bundle small). */
+  .markdown {
+    @apply text-base leading-[1.7] break-words text-text;
+  }
+  .markdown > * + * {
+    @apply mt-4;
+  }
+  .markdown h1 {
+    @apply text-2xl font-bold;
+  }
+  .markdown h2 {
+    @apply border-b border-border pb-1 text-xl font-bold;
+  }
+  .markdown h3 {
+    @apply text-lg font-semibold;
+  }
+  .markdown h4,
+  .markdown h5,
+  .markdown h6 {
+    @apply font-semibold;
+  }
+  .markdown a {
+    @apply text-link underline underline-offset-2;
+  }
+  .markdown ul {
+    @apply list-disc pl-6;
+  }
+  .markdown ol {
+    @apply list-decimal pl-6;
+  }
+  .markdown li + li {
+    @apply mt-1;
+  }
+  .markdown li > ul,
+  .markdown li > ol {
+    @apply mt-1;
+  }
+  .markdown blockquote {
+    @apply border-l-4 border-border pl-4 text-muted;
+  }
+  .markdown code {
+    @apply rounded bg-surface px-1 py-0.5 font-mono text-[0.9em];
+  }
+  .markdown pre {
+    @apply overflow-x-auto rounded-lg border border-border bg-surface p-3 text-sm leading-6;
+  }
+  .markdown pre code {
+    @apply bg-transparent p-0 text-inherit;
+  }
+  .markdown table {
+    @apply block w-full overflow-x-auto border-collapse text-sm;
+  }
+  .markdown th,
+  .markdown td {
+    @apply border border-border px-2 py-1;
+  }
+  .markdown th {
+    @apply bg-surface font-semibold;
+  }
+  .markdown img {
+    @apply h-auto max-w-full rounded;
+  }
+  .markdown hr {
+    @apply border-border;
+  }
+  .markdown input[type="checkbox"] {
+    @apply mr-1 align-middle accent-primary;
+  }
+  .markdown li:has(> input[type="checkbox"]) {
+    @apply list-none;
+  }
+}

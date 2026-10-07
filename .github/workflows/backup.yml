@@ -1,0 +1,71 @@
+# TSD 9.3 (TD-06) — weekly D1 export → gzip → GitHub Actions artifact.
+# Kept outside Cloudflare on purpose; GitHub deletes it after 90 days.
+name: backup
+
+on:
+  schedule:
+    # Monday 04:00 KST = Sunday 19:00 UTC
+    - cron: "0 19 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  D1_NAME: jungle5-prod
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Export D1
+        id: export
+        run: |
+          day=$(TZ=Asia/Seoul date +%F)
+          echo "name=jungle5-d1-${day}" >> "$GITHUB_OUTPUT"
+          pnpm exec wrangler d1 export "$D1_NAME" --remote --output=backup.sql
+          gzip -9 backup.sql
+          echo "size=$(stat -c %s backup.sql.gz)" >> "$GITHUB_OUTPUT"
+
+      - name: Store as artifact (90 days)
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.export.outputs.name }}
+          path: backup.sql.gz
+          retention-days: 90
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Notify success
+        if: success()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          [ -z "$ALERT_WEBHOOK_URL" ] && exit 0
+          msg="[jungle5] 주간 백업 완료: ${{ steps.export.outputs.name }} (${{ steps.export.outputs.size }} bytes) — ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          jq -n --arg c "$msg" '{content: $c, allowed_mentions: {parse: []}}' |
+            curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$ALERT_WEBHOOK_URL"
+
+      - name: Notify failure
+        if: failure()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          [ -z "$ALERT_WEBHOOK_URL" ] && exit 0
+          msg="[jungle5] 주간 백업 실패 — ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          jq -n --arg c "$msg" '{content: $c, allowed_mentions: {parse: []}}' |
+            curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$ALERT_WEBHOOK_URL"

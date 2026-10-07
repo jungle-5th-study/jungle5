@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jungle5",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  // Custom domain (zone jungle5.xyz on this account). The old workers.dev
+  // address stays enabled and 301-redirects to APP_ORIGIN (src/worker/index.ts).
+  "routes": [{ "pattern": "jungle5.xyz", "custom_domain": true }],
+  "workers_dev": true,
+  // SPA build output. The Worker runs first for every request so that the
+  // security headers (TSD 9.5) are applied to static assets as well.
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jungle5-prod",
+      "database_id": "5a43b1f1-dabf-42c4-bcba-2db2cde4c60f",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Non-secret configuration (TSD 4.2). Secrets are set with `wrangler secret put`.
+  "vars": {
+    "ENV": "production",
+    "APP_ORIGIN": "https://jungle5.xyz",
+    "DISCORD_CLIENT_ID": "1557230146703069304",
+    "DISCORD_GUILD_ID": "1272414440989392967",
+    "DISCORD_ADMIN_ROLE_ID": "1551814006254211143"
+  }
+}
