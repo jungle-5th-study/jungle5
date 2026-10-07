@@ -237,14 +237,34 @@ export const postHtml = sqliteTable(
       .references(() => posts.id, { onDelete: "cascade" }),
     html: text("html").notNull(),
     filename: text("filename").notNull(),
-    /** UTF-8 bytes of `html`. */
+    /** Total UTF-8 bytes of the file (`html` plus every chunk). */
     size: integer("size").notNull(),
     uploadedAt: integer("uploaded_at").notNull(),
     uploadedVia: text("uploaded_via", { enum: ["site", "discord"] }).notNull(),
     /** The Discord message the file came from (D-32); makes the message command idempotent. */
     discordMessageId: text("discord_message_id").unique(),
+    /** Number of extra pieces in `post_html_chunks` (seq 1..n) after `html`, the first piece (TD-25, migration 0004). */
+    chunkCount: integer("chunk_count").notNull().default(0),
   },
   (t) => [check("post_html_uploaded_via_chk", sql`${t.uploadedVia} IN ('site', 'discord')`)],
+);
+
+/**
+ * Pieces 1..n of an attached HTML file larger than one D1 value (TD-25,
+ * migration 0004). Piece 0 is `post_html.html`. Each piece is at most
+ * 1,900,000 UTF-8 bytes, cut at a character boundary. Written and deleted only
+ * together with its `post_html` row (one batch).
+ */
+export const postHtmlChunks = sqliteTable(
+  "post_html_chunks",
+  {
+    postId: text("post_id")
+      .notNull()
+      .references(() => posts.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    data: text("data").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.postId, t.seq] }), check("post_html_chunks_seq_chk", sql`${t.seq} >= 1`)],
 );
 
 export type MemberRow = typeof members.$inferSelect;

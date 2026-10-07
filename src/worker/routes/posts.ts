@@ -5,15 +5,16 @@ import type { PostHtmlUrl } from "../../shared/api";
 import { HTML_URL_TTL_SECONDS, LIMITS } from "../../shared/constants";
 import { nameKey, uuidv7 } from "../../shared/ids";
 import {
+  HTML_TOO_LARGE_MESSAGE,
+  htmlFilenameSchema,
   postCreateSchema,
-  postHtmlSchema,
   postListQuerySchema,
   postPatchSchema,
   postRoundSchema,
 } from "../../shared/schemas";
 import { categories, postHtml, posts, postTags, tags } from "../db/schema";
 import { buildHtmlUrl } from "../lib/htmlSigning";
-import { upsertPostHtml } from "../lib/postHtml";
+import { decodeHtmlBytes, deletePostHtml, readBodyCapped, writePostHtml } from "../lib/postHtml";
 import {
   AppError,
   forbidden,
@@ -181,7 +182,6 @@ export const postRoutes = new Hono<AppEnv>()
           updatedAt: now,
         }),
         ...tagStatements(db, input.id, uniqueTags(input.tags), now),
-        ...(input.html ? [upsertPostHtml(db, input.id, input.html, now, "site")] : []),
       ]);
     } catch (err) {
       // Concurrent duplicate submit: the PK rejected the second insert (TD-13).
@@ -267,20 +267,35 @@ export const postRoutes = new Hono<AppEnv>()
     return c.json(await loadPostDetail(db, actor, id));
   })
 
-  // Attached HTML (D-30, TD-25, TD-26). Body: { filename, html } (JSON, like
-  // every mutation: the CSRF guard requires application/json). Replaces any
-  // existing file. Counts as a content edit (updated_at).
+  // Attached HTML (D-30, TD-25, TD-26). The body is the raw file
+  // (`Content-Type: text/html; charset=utf-8`, the CSRF guard's one non-JSON
+  // route) and `X-Filename` its percent-encoded UTF-8 name: no JSON wrapping,
+  // so a 10 MB file costs no JSON parse. Replaces any existing file. Counts as
+  // a content edit (updated_at). Queries: session + post + batch + detail (3).
   .put("/:id/html", async (c) => {
     const actor = c.get("actor");
     const db = c.get("db");
     const id = c.req.param("id");
-    const input = parseOrThrow(postHtmlSchema, await readJson(c));
+    const filename = uploadFilename(c.req.header("X-Filename"));
+    const charset = /;\s*charset\s*=\s*"?([^";\s]*)/i.exec(c.req.header("Content-Type") ?? "")?.[1];
+    if (charset !== undefined && !/^utf-?8$/i.test(charset)) throw validationError({ html: [NOT_UTF8] });
+    // Refuse a declared oversize body before reading it.
+    if (Number(c.req.header("Content-Length") ?? "0") > LIMITS.htmlMaxBytes) throw htmlTooLarge();
+
     const post = await loadOwnedPost(db, actor, id);
     if (!canEditPostHtml(actor, post)) throw forbidden();
+
+    const bytes = await readBodyCapped(c.req.raw.body, LIMITS.htmlMaxBytes);
+    if (!bytes) throw htmlTooLarge();
+    const decoded = decodeHtmlBytes(bytes);
+    if (!decoded.ok) {
+      if (decoded.problem === "too_large") throw htmlTooLarge();
+      throw validationError({ html: [decoded.problem === "empty" ? "빈 파일입니다" : NOT_UTF8] });
+    }
     const now = c.get("deps").now();
     await db.batch([
-      upsertPostHtml(db, id, input, now, "site"),
       db.update(posts).set({ updatedAt: now }).where(eq(posts.id, id)),
+      ...writePostHtml(db, id, { filename, pieces: decoded.pieces, size: decoded.size }, now, "site"),
     ]);
     return c.json(await loadPostDetail(db, actor, id));
   })
@@ -298,7 +313,7 @@ export const postRoutes = new Hono<AppEnv>()
         .update(posts)
         .set({ updatedAt: now })
         .where(and(eq(posts.id, id), sql`EXISTS (SELECT 1 FROM post_html h WHERE h.post_id = ${id})`)),
-      db.delete(postHtml).where(eq(postHtml.postId, id)),
+      ...deletePostHtml(db, id),
     ]);
     return c.body(null, 204);
   })
@@ -326,6 +341,25 @@ export const postRoutes = new Hono<AppEnv>()
 
   .post("/:id/hide", async (c) => setPostHidden(c.get("db"), c.get("actor"), c.req.param("id"), c.get("deps").now()).then(() => c.body(null, 204)))
   .post("/:id/unhide", async (c) => setPostHidden(c.get("db"), c.get("actor"), c.req.param("id"), null).then(() => c.body(null, 204)));
+
+const NOT_UTF8 = "UTF-8 텍스트 파일만 올릴 수 있습니다";
+
+/** 413 with the usual VALIDATION envelope, so the editor shows it on the file field. */
+const htmlTooLarge = () =>
+  new AppError(413, "VALIDATION", HTML_TOO_LARGE_MESSAGE, { fields: { html: [HTML_TOO_LARGE_MESSAGE] } });
+
+/** `X-Filename`: percent-encoded UTF-8 (header values are ASCII). 422 on `filename`. */
+function uploadFilename(header: string | undefined): string {
+  let raw: string;
+  try {
+    raw = decodeURIComponent(header ?? "");
+  } catch {
+    throw validationError({ filename: ["파일 이름을 읽지 못했습니다"] });
+  }
+  const parsed = htmlFilenameSchema.safeParse(raw);
+  if (!parsed.success) throw validationError({ filename: parsed.error.issues.map((i) => i.message) });
+  return parsed.data;
+}
 
 async function setPostHidden(db: Db, actor: Actor, id: string, hiddenAt: number | null) {
   if (!canHide(actor)) throw forbidden();

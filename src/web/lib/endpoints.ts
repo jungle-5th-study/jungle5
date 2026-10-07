@@ -19,7 +19,6 @@ import type {
   CategoryPatchInput,
   CommentCreateInput,
   PostCreateInput,
-  PostHtmlInput,
   PostPatchInput,
   RoundCreateInput,
   RoundInfoPatchInput,
@@ -93,8 +92,16 @@ export const api = {
 
   // ---- attached HTML (D-30, TD-25, TD-26) ----
   postHtmlUrl: (id: string) => request<PostHtmlUrl>(`/api/posts/${enc(id)}/html-url`),
-  putPostHtml: (id: string, input: PostHtmlInput) =>
-    request<PostDetail>(`/api/posts/${enc(id)}/html`, { method: "PUT", body: input }),
+  /** The raw file (TD-25): no JSON wrapping; the name goes percent-encoded in X-Filename. */
+  putPostHtml: (id: string, file: { filename: string; bytes: BodyInit }) =>
+    request<PostDetail>(`/api/posts/${enc(id)}/html`, {
+      method: "PUT",
+      raw: {
+        body: file.bytes,
+        contentType: "text/html; charset=utf-8",
+        headers: { "X-Filename": encodeURIComponent(file.filename) },
+      },
+    }),
   deletePostHtml: (id: string) => request<void>(`/api/posts/${enc(id)}/html`, { method: "DELETE" }),
 
   // ---- studies & rounds (M2) ----

@@ -1,6 +1,7 @@
 // Discord HTTP calls of the "정글5에 올리기" message command (TD-27), behind an
 // interface built on an injectable fetch so tests never hit the network.
 // Interaction follow-ups use the interaction token (no bot token needed).
+import { readBodyCapped } from "../lib/postHtml";
 
 const API = "https://discord.com/api/v10";
 
@@ -69,9 +70,13 @@ export function createDiscordAppClient(env: Env, fetchImpl: typeof fetch): Disco
       const res = await fetchImpl(url, { redirect: "manual" });
       if (!res.ok) throw new DiscordApiError("attachment download failed", res.status);
       const declared = Number(res.headers.get("Content-Length") ?? "0");
-      if (declared > maxBytes) throw new DiscordApiError("attachment too large", 413);
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      if (bytes.byteLength > maxBytes) throw new DiscordApiError("attachment too large", 413);
+      if (declared > maxBytes) {
+        await res.body?.cancel().catch(() => undefined);
+        throw new DiscordApiError("attachment too large", 413);
+      }
+      // Stops reading once past maxBytes, whatever Content-Length said.
+      const bytes = await readBodyCapped(res.body, maxBytes);
+      if (!bytes) throw new DiscordApiError("attachment too large", 413);
       return bytes;
     },
 

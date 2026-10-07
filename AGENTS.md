@@ -60,7 +60,7 @@ If code and docs disagree, ask or follow the docs; do not silently "fix" a decis
 - **Markdown is rendered client-side only** with react-markdown + remark-gfm + rehype-sanitize (TD-12). The server stores raw Markdown. Never use `dangerouslySetInnerHTML`; links are http/https only.
 - **Test login exists only when `ENV=test`** (`POST /auth/test-login`, TSD 9.1). Never register it or the dev login form in production code paths.
 - **Times:** store UTC epoch ms; display in KST (`src/shared/time.ts`, `src/web/lib/kst.ts`). KST has no DST.
-- **Mutations need CSRF headers:** `Origin` must equal `APP_ORIGIN` and `Content-Type: application/json` (also for body-less DELETE).
+- **Mutations need CSRF headers:** `Origin` must equal `APP_ORIGIN` and `Content-Type: application/json` (also for body-less DELETE). The one exception is the raw file upload `PUT /api/posts/:id/html`, which needs `Content-Type: text/html` instead (TD-25).
 - **Errors** use `{ error: { code, message } }` with the codes in `src/shared/errors.ts` and TSD §7. Hidden content returns 404, not 403.
 - **UI copy is Korean**, short and plain, matching existing screens. Code comments and identifiers are English.
 

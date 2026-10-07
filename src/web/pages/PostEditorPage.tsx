@@ -28,7 +28,7 @@ export interface PostFormValues {
   roundId: string;
   /**
    * Name of the HTML file chosen when the draft was saved. The file itself is
-   * never put in localStorage (up to 1.5MB), so a restored draft asks for it again.
+   * never put in localStorage (up to 10MB), so a restored draft asks for it again.
    */
   htmlFilename: string;
 }
@@ -213,19 +213,28 @@ export function PostForm({
 
   const categories = useQuery({ queryKey: queryKeys.categories, queryFn: api.categories });
 
+  // A new post whose create went through but whose file upload failed: the
+  // next save edits that post instead of replaying the create (which would
+  // ignore changes made since).
+  const created = useRef<PostDetail | null>(null);
+
   const save = useMutation({
     mutationFn: async (payload: PostCreateInput) => {
-      if (mode === "new") return api.createPost(payload);
-      const { id: _id, html: _html, ...patch } = payload;
       let detail: PostDetail;
       try {
-        detail = await api.updatePost(postId, patch);
+        if (mode === "new" && !created.current) {
+          detail = await api.createPost(payload);
+          created.current = detail;
+        } else {
+          const { id: _id, ...patch } = payload;
+          detail = await api.updatePost(postId, patch);
+        }
       } catch (err) {
         throw new SaveStepError("post", err);
       }
-      // TD-25: the file is its own request, sent only after the text is saved.
+      // TD-25: the file is its own raw request, sent only after the text is saved.
       try {
-        if (htmlFile) detail = await api.putPostHtml(postId, { filename: htmlFile.filename, html: htmlFile.html });
+        if (htmlFile) detail = await api.putPostHtml(postId, { filename: htmlFile.filename, bytes: htmlFile.bytes });
         else if (removeHtml && original?.html) {
           await api.deletePostHtml(postId);
           detail = { ...detail, html: null };
@@ -269,9 +278,7 @@ export function PostForm({
     // A prefilled round that is not linkable (ended, not my study) is dropped, as the field shows.
     const linkable = queryClient.getQueryData<LinkableRound[]>(queryKeys.linkableRounds);
     const roundOk = !values.roundId || !linkable || linkable.some((r) => r.id === values.roundId);
-    const base = toPayload(postId, roundOk ? values : { ...values, roundId: "" });
-    // New post: the file goes in the same create request (TD-25).
-    const payload = mode === "new" && htmlFile ? { ...base, html: { filename: htmlFile.filename, html: htmlFile.html } } : base;
+    const payload = toPayload(postId, roundOk ? values : { ...values, roundId: "" });
     const errors = validate(payload);
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
@@ -370,7 +377,7 @@ export function PostForm({
         existing={removeHtml ? null : (original?.html ?? null)}
         removed={removeHtml && Boolean(original?.html)}
         draftFilename={htmlFile ? "" : values.htmlFilename}
-        error={firstPrefixed(fieldErrors, "html")}
+        error={firstPrefixed(fieldErrors, "html") ?? err("filename")}
         onPick={pickHtml}
         onRemove={() => {
           setHtmlFile(null);

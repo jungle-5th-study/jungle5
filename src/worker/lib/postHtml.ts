@@ -1,50 +1,161 @@
 // Storing a post's attached HTML (D-30, TD-25). Used by the posts routes and
 // the Discord message command (D-32).
-import { sql } from "drizzle-orm";
+//
+// One D1 value holds at most 2,000,000 bytes, so a file of up to 10,000,000
+// bytes is cut into pieces of at most HTML_CHUNK_BYTES, each at a UTF-8
+// character boundary and stored as TEXT: piece 0 in post_html.html, pieces
+// 1..n in post_html_chunks (migration 0004). Every write replaces the whole set
+// in one batch, so readers never see a mix of two uploads.
+import { eq, sql } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import { LIMITS } from "../../shared/constants";
-import { utf8ByteLength } from "../../shared/schemas";
-import { postHtml } from "../db/schema";
+import { postHtml, postHtmlChunks } from "../db/schema";
 import type { Db } from "../types";
 
+/** Largest piece, in UTF-8 bytes: under the 2,000,000-byte D1 value cap with room for post_html's other columns. */
+export const HTML_CHUNK_BYTES = 1_900_000;
+
+/**
+ * Splits UTF-8 bytes into views of at most `maxBytes`, never inside a
+ * multi-byte character: a cut that would land on a continuation byte
+ * (0b10xxxxxx) moves back to the start of that character (at most 3 bytes).
+ * Invalid UTF-8 may still be cut anywhere; strict decoding rejects it later.
+ */
+export function splitUtf8(bytes: Uint8Array, maxBytes: number = HTML_CHUNK_BYTES): Uint8Array[] {
+  const pieces: Uint8Array[] = [];
+  let start = 0;
+  while (bytes.length - start > maxBytes) {
+    let end = start + maxBytes;
+    for (let back = 0; back < 3 && ((bytes[end] ?? 0) & 0xc0) === 0x80; back++) end--;
+    pieces.push(bytes.subarray(start, end));
+    start = end;
+  }
+  pieces.push(bytes.subarray(start));
+  return pieces;
+}
+
+/** A checked file, ready to store: `pieces` are the decoded pieces in order. */
 export interface HtmlFile {
   filename: string;
-  html: string;
+  pieces: string[];
+  /** Total UTF-8 bytes. */
+  size: number;
+}
+
+export type HtmlBytesProblem = "empty" | "too_large" | "not_text";
+export type HtmlBytesResult = { ok: true; pieces: string[]; size: number } | { ok: false; problem: HtmlBytesProblem };
+
+/**
+ * Checks raw file bytes (≤ 10,000,000, strict UTF-8, no U+0000) and decodes
+ * them piece by piece. Decoding each piece with `fatal` validates the whole
+ * file, because pieces end at character boundaries. `ignoreBOM` keeps a
+ * leading BOM (and any U+FEFF at a cut), so the stored text re-encodes to
+ * exactly the uploaded bytes and `size` matches what the HTML worker sends.
+ */
+export function decodeHtmlBytes(bytes: Uint8Array): HtmlBytesResult {
+  if (bytes.byteLength === 0) return { ok: false, problem: "empty" };
+  if (bytes.byteLength > LIMITS.htmlMaxBytes) return { ok: false, problem: "too_large" };
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const pieces: string[] = [];
+  for (const piece of splitUtf8(bytes)) {
+    let text: string;
+    try {
+      text = decoder.decode(piece);
+    } catch {
+      return { ok: false, problem: "not_text" };
+    }
+    // U+0000 means a binary file. Searching the string is several times
+    // cheaper than Uint8Array#includes (measured in workerd).
+    if (text.includes("\u0000")) return { ok: false, problem: "not_text" };
+    pieces.push(text);
+  }
+  return { ok: true, pieces, size: bytes.byteLength };
 }
 
 /**
- * Insert-or-replace statement for the post's HTML (one statement, for a batch).
- * A replacement keeps `discord_message_id`, so running the Discord command on
- * the same message again still points at this post.
+ * Reads a request/response body, stopping as soon as it passes `maxBytes`
+ * (a missing or wrong Content-Length cannot make us buffer more).
+ * Returns null when the body is larger than `maxBytes`.
  */
-export function upsertPostHtml(
+export async function readBodyCapped(body: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<Uint8Array | null> {
+  if (!body) return new Uint8Array(0);
+  const reader = body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    parts.push(value);
+  }
+  if (parts.length === 1) return parts[0]!;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+type Statements = [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]];
+
+/**
+ * Statements (for one batch) that store `file` as the post's HTML, replacing
+ * any earlier file and all of its pieces. A replacement keeps
+ * `discord_message_id`, so running the Discord command on the same message
+ * again still points at this post. The batch must also contain (or follow) the
+ * posts row, since pieces reference posts(id).
+ */
+export function writePostHtml(
   db: Db,
   postId: string,
   file: HtmlFile,
   now: number,
   via: "site" | "discord",
   discordMessageId: string | null = null,
-) {
-  return db
-    .insert(postHtml)
-    .values({
-      postId,
-      html: file.html,
-      filename: file.filename,
-      size: utf8ByteLength(file.html),
-      uploadedAt: now,
-      uploadedVia: via,
-      discordMessageId,
-    })
-    .onConflictDoUpdate({
-      target: postHtml.postId,
-      set: {
-        html: sql`excluded.html`,
-        filename: sql`excluded.filename`,
-        size: sql`excluded.size`,
-        uploadedAt: sql`excluded.uploaded_at`,
-        uploadedVia: sql`excluded.uploaded_via`,
-      },
-    });
+): Statements {
+  const [first = "", ...rest] = file.pieces;
+  return [
+    db
+      .insert(postHtml)
+      .values({
+        postId,
+        html: first,
+        filename: file.filename,
+        size: file.size,
+        uploadedAt: now,
+        uploadedVia: via,
+        discordMessageId,
+        chunkCount: rest.length,
+      })
+      .onConflictDoUpdate({
+        target: postHtml.postId,
+        set: {
+          html: sql`excluded.html`,
+          filename: sql`excluded.filename`,
+          size: sql`excluded.size`,
+          uploadedAt: sql`excluded.uploaded_at`,
+          uploadedVia: sql`excluded.uploaded_via`,
+          chunkCount: sql`excluded.chunk_count`,
+        },
+      }),
+    db.delete(postHtmlChunks).where(eq(postHtmlChunks.postId, postId)),
+    // One statement per piece: each bound value stays under the D1 value cap.
+    ...rest.map((data, i) => db.insert(postHtmlChunks).values({ postId, seq: i + 1, data })),
+  ];
+}
+
+/** Statements (for one batch) that remove the post's HTML and all of its pieces. */
+export function deletePostHtml(db: Db, postId: string): Statements {
+  return [
+    db.delete(postHtmlChunks).where(eq(postHtmlChunks.postId, postId)),
+    db.delete(postHtml).where(eq(postHtml.postId, postId)),
+  ];
 }
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };

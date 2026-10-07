@@ -80,6 +80,11 @@ const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 export interface RequestOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
+  /**
+   * A non-JSON body sent as is (the raw HTML upload, TD-25): replaces `body`
+   * and the JSON Content-Type.
+   */
+  raw?: { body: BodyInit; contentType: string; headers?: Record<string, string> };
   signal?: AbortSignal;
 }
 
@@ -88,6 +93,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const method = options.method ?? "GET";
   const headers: Record<string, string> = { Accept: "application/json" };
   if (MUTATING.has(method)) headers["Content-Type"] = "application/json";
+  if (options.raw) Object.assign(headers, options.raw.headers, { "Content-Type": options.raw.contentType });
 
   let res: Response;
   try {
@@ -95,7 +101,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       method,
       headers,
       credentials: "same-origin",
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body: options.raw ? options.raw.body : options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
     });
   } catch (err) {

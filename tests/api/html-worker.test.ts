@@ -4,7 +4,8 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import worker, { handleHtmlRequest, type HtmlEnv } from "../../src/html-worker/index";
 import { buildHtmlUrl, signHtmlUrl } from "../../src/worker/lib/htmlSigning";
-import { createPost, login, makeApp, uuidv7 } from "../helpers";
+import { HTML_CHUNK_BYTES } from "../../src/worker/lib/postHtml";
+import { createPost, createPostWithHtml, login, makeApp, uuidv7 } from "../helpers";
 
 const app = makeApp();
 const KEY = env.HTML_SIGNING_KEY;
@@ -13,11 +14,20 @@ const htmlEnv: HtmlEnv = { DB: env.DB, HTML_SIGNING_KEY: KEY };
 type IncomingRequest = Parameters<typeof worker.fetch>[0];
 const nowSec = () => Math.floor(Date.now() / 1000);
 
-async function postWithHtml(html: string) {
+async function postWithHtml(html: string | Uint8Array) {
   const user = await login(app);
-  const post = await createPost(app, user, { html: { filename: "page.html", html } });
+  const post = await createPostWithHtml(app, user, html);
   return post.id;
 }
+
+const EXPECTED_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "content-security-policy": "sandbox allow-scripts allow-popups allow-forms allow-modals allow-downloads",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "cache-control": "private, max-age=300",
+  "x-robots-tag": "noindex, nofollow",
+};
 
 async function fetchWorker(url: string, init?: RequestInit) {
   return worker.fetch(new Request(url, init) as IncomingRequest, htmlEnv);
@@ -39,6 +49,62 @@ describe("jungle5-html worker", () => {
     expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(res.headers.get("Cache-Control")).toBe("private, max-age=300");
     expect(res.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  it("streams a multi-piece file as the exact uploaded bytes, with Content-Length and the same headers", async () => {
+    // 2 extra pieces; Hangul and emoji everywhere, so the cuts fall inside characters.
+    const unit = new TextEncoder().encode("<p>정글 😀</p>\n");
+    const n = 2 * HTML_CHUNK_BYTES + 12_345;
+    const bytes = new Uint8Array(n).fill(0x61);
+    for (let i = 0; i + unit.length <= n; i += unit.length) bytes.set(unit, i);
+    const id = await postWithHtml(bytes);
+    const chunks = await env.DB.prepare("SELECT count(*) AS n FROM post_html_chunks WHERE post_id = ?").bind(id).first<{ n: number }>();
+    expect(chunks?.n).toBe(2);
+
+    const res = await fetchWorker(await buildHtmlUrl(ORIGIN, KEY, id, nowSec() + 3600));
+    expect(res.status).toBe(200);
+    expect(Object.fromEntries(res.headers)).toEqual({ ...EXPECTED_HEADERS, "content-length": String(n) });
+    expect(res.body).toBeInstanceOf(ReadableStream);
+    // Read it as a stream: more than one piece arrives.
+    const reader = res.body!.getReader();
+    const parts: Uint8Array[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+    }
+    expect(parts.length).toBeGreaterThanOrEqual(3);
+    const got = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
+    let o = 0;
+    for (const p of parts) {
+      got.set(p, o);
+      o += p.length;
+    }
+    expect(got.length).toBe(n);
+    expect(got.every((v, i) => v === bytes[i])).toBe(true);
+  });
+
+  it("a row written before migration 0004 (one piece, chunk_count 0) is served unchanged", async () => {
+    const user = await login(app);
+    const post = await createPost(app, user);
+    const html = "<!doctype html><title>옛 파일</title><p>그대로</p>";
+    await env.DB.prepare(
+      "INSERT INTO post_html (post_id, html, filename, size, uploaded_at, uploaded_via) VALUES (?, ?, 'old.html', ?, 1, 'site')",
+    )
+      .bind(post.id, html, new TextEncoder().encode(html).length)
+      .run();
+    const res = await fetchWorker(await buildHtmlUrl(ORIGIN, KEY, post.id, nowSec() + 3600));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Length")).toBe(String(new TextEncoder().encode(html).length));
+    expect(await res.text()).toBe(html);
+  });
+
+  it("missing pieces → 500, never a truncated file", async () => {
+    const id = await postWithHtml(new Uint8Array(HTML_CHUNK_BYTES + 10).fill(0x62));
+    await env.DB.prepare("DELETE FROM post_html_chunks WHERE post_id = ?").bind(id).run();
+    const res = await fetchWorker(await buildHtmlUrl(ORIGIN, KEY, id, nowSec() + 3600));
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain("bbbb");
   });
 
   it("an expired link → 410 with a Korean page", async () => {

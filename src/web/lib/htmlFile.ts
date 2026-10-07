@@ -1,22 +1,25 @@
 // Reading an attached HTML file in the browser (D-30, TD-25). The file is
-// decoded as strict UTF-8 and never executed here; its <title> is read with
-// DOMParser (scripts in a parsed document do not run).
+// decoded as strict UTF-8 (to refuse other encodings before uploading) and
+// never executed here; its <title> is read with DOMParser (scripts in a parsed
+// document do not run). The upload sends the original bytes, not the text.
 import { HTML_EXTENSIONS, LIMITS } from "../../shared/constants";
 
 export interface HtmlFile {
   filename: string;
   html: string;
+  /** The file as read: the raw upload body (PUT /api/posts/:id/html). */
+  bytes: ArrayBuffer;
   /** UTF-8 bytes */
   size: number;
 }
 
 export type HtmlReadResult = { ok: true; file: HtmlFile } | { ok: false; error: string };
 
-/** "980B", "312KB", "1.2MB" */
+/** "980B", "312KB", "1.2MB", "10MB" */
 export function formatBytes(n: number): string {
   if (n < 1000) return `${n}B`;
   if (n < 1_000_000) return `${Math.round(n / 1000)}KB`;
-  return `${(n / 1_000_000).toFixed(1)}MB`;
+  return `${Number((n / 1_000_000).toFixed(1))}MB`;
 }
 
 export const HTML_MAX_LABEL = formatBytes(LIMITS.htmlMaxBytes);
@@ -65,13 +68,16 @@ export async function readHtmlFile(file: File): Promise<HtmlReadResult> {
     };
   }
   if (html.includes("\u0000")) return { ok: false, error: "텍스트(HTML) 파일이 아닙니다." };
-  return { ok: true, file: { filename, html, size: bytes.byteLength } };
+  return { ok: true, file: { filename, html, bytes, size: bytes.byteLength } };
 }
+
+/** Only the head of a (up to 10 MB) file is parsed for its <title>. */
+const TITLE_SCAN_CHARS = 64 * 1024;
 
 /** The document's <title>, parsed without running anything; "" when missing. */
 export function htmlTitle(html: string): string {
   try {
-    const doc = new DOMParser().parseFromString(html, "text/html");
+    const doc = new DOMParser().parseFromString(html.slice(0, TITLE_SCAN_CHARS), "text/html");
     return doc.title.replace(/\s+/g, " ").trim().slice(0, LIMITS.postTitleMax);
   } catch {
     return "";
@@ -84,6 +90,6 @@ export function titleFromFilename(name: string): string {
 }
 
 /** Title suggestion for a chosen file: its <title>, else the file name. */
-export function suggestedTitle(file: HtmlFile): string {
+export function suggestedTitle(file: Pick<HtmlFile, "filename" | "html">): string {
   return htmlTitle(file.html) || titleFromFilename(file.filename);
 }

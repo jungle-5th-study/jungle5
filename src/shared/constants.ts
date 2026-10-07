@@ -26,8 +26,12 @@ export const LIMITS = {
   /** Characters of a round's scope in the home "this week" list. */
   scopeExcerpt: 200,
   // Attached HTML file (D-30, TD-25)
-  /** UTF-8 bytes. D1 rows are capped at 2,000,000 bytes; this leaves room for the other columns. */
-  htmlMaxBytes: 1_500_000,
+  /**
+   * UTF-8 bytes. One D1 value is capped at 2,000,000 bytes, so the server
+   * stores a file in pieces (TD-25, migration 0004). 10 MB is also Discord's
+   * free upload cap (D-30).
+   */
+  htmlMaxBytes: 10_000_000,
   htmlFilenameMax: 200,
 } as const;
 

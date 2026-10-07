@@ -20,13 +20,23 @@ import {
 
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-/** 6.2 step 4: mutating requests need Origin === APP_ORIGIN and a JSON body type. */
+/** The one route whose body is a raw file, not JSON: PUT /api/posts/:id/html (TD-25, TSD 3.2). */
+const RAW_HTML_UPLOAD = /^\/api\/posts\/[^/]+\/html$/;
+
+/**
+ * 6.2 step 4: mutating requests need Origin === APP_ORIGIN and a JSON body
+ * type; the raw HTML upload needs `text/html` instead. Neither is a
+ * CORS-safelisted type, so a cross-site page can only send them after a
+ * preflight, which this API never answers with CORS headers.
+ */
 export const csrfGuard = createMiddleware<AppEnv>(async (c, next) => {
   if (MUTATING.has(c.req.method)) {
     const origin = c.req.header("Origin");
     const contentType = c.req.header("Content-Type") ?? "";
     if (origin !== c.env.APP_ORIGIN) throw forbidden("허용되지 않은 출처의 요청입니다");
-    if (!/^application\/json(\s*;|$)/i.test(contentType)) {
+    if (c.req.method === "PUT" && RAW_HTML_UPLOAD.test(c.req.path)) {
+      if (!/^text\/html(\s*;|$)/i.test(contentType)) throw forbidden("Content-Type: text/html 이 필요합니다");
+    } else if (!/^application\/json(\s*;|$)/i.test(contentType)) {
       throw forbidden("Content-Type: application/json 이 필요합니다");
     }
   }

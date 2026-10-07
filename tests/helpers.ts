@@ -23,6 +23,10 @@ export interface CallOptions {
   origin?: string | null;
   /** null = omit the header */
   contentType?: string | null;
+  /** Sent as is instead of JSON `body` (raw HTML upload, TD-25). */
+  rawBody?: BodyInit;
+  /** Extra request headers. */
+  headers?: Record<string, string>;
   env?: Partial<Env>;
 }
 
@@ -41,10 +45,11 @@ export async function call(app: App, method: string, path: string, opts: CallOpt
   if (origin) headers.set("Origin", origin);
   const contentType = opts.contentType === undefined ? "application/json" : opts.contentType;
   if (contentType && method !== "GET") headers.set("Content-Type", contentType);
+  for (const [k, v] of Object.entries(opts.headers ?? {})) headers.set(k, v);
   const ctx = createExecutionContext();
   const res = await app.request(
     `${ORIGIN}${path}`,
-    { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) },
+    { method, headers, body: opts.rawBody ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body)) },
     { ...env, ...opts.env },
     ctx,
   );
@@ -98,6 +103,38 @@ export function postInput(overrides: Record<string, unknown> = {}) {
 export async function createPost(app: App, user: TestUser, overrides: Record<string, unknown> = {}) {
   const res = await call(app, "POST", "/api/posts", { cookie: user.cookie, body: postInput(overrides) });
   if (res.status !== 201) throw new Error(`create post failed: ${res.status} ${res.text}`);
+  return res.json as { id: string; [k: string]: unknown };
+}
+
+/** PUT /api/posts/:id/html with the raw file (TD-25): text/html body, percent-encoded X-Filename. */
+export function putHtml(
+  app: App,
+  cookie: string | undefined,
+  postId: string,
+  html: string | Uint8Array,
+  filename = "page.html",
+  opts: Omit<CallOptions, "cookie" | "rawBody"> = {},
+) {
+  return call(app, "PUT", `/api/posts/${postId}/html`, {
+    cookie,
+    contentType: "text/html; charset=utf-8",
+    rawBody: html,
+    ...opts,
+    headers: { "X-Filename": encodeURIComponent(filename), ...opts.headers },
+  });
+}
+
+/** A post with an attached HTML file (create, then raw PUT). */
+export async function createPostWithHtml(
+  app: App,
+  user: TestUser,
+  html: string | Uint8Array,
+  filename = "page.html",
+  overrides: Record<string, unknown> = {},
+) {
+  const post = await createPost(app, user, overrides);
+  const res = await putHtml(app, user.cookie, post.id, html, filename);
+  if (res.status !== 200) throw new Error(`put html failed: ${res.status} ${res.text}`);
   return res.json as { id: string; [k: string]: unknown };
 }
 

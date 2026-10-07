@@ -203,23 +203,82 @@ describe("PostEditorPage: HTML file (D-30)", () => {
 
   const htmlFile = (content: string, name = "hooks.html") => new File([content], name, { type: "text/html" });
 
-  it("prefills title from <title> and the required body, and sends the file inside POST /api/posts", async () => {
-    const { spy, resolve } = deferredPostFetch();
+  it("prefills title from <title> and the required body; creates the post, then PUTs the raw file", async () => {
+    const calls: { method: string; url: string; init: RequestInit }[] = [];
+    let createdId = "";
+    stubFetch((url, init) => {
+      calls.push({ method: init?.method ?? "GET", url, init: init ?? {} });
+      if (url === "/api/posts" && init?.method === "POST") {
+        createdId = (JSON.parse(init.body as string) as { id: string }).id;
+        return json(201, { id: createdId });
+      }
+      if (init?.method === "PUT") return json(200, { id: createdId });
+      return undefined;
+    });
     const { user } = setup();
-    await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile("<title>훅 총정리</title><p>본문</p>"));
-    expect(await screen.findByTestId("html-attached")).toHaveTextContent("hooks.html");
+    const content = "<title>훅 총정리</title><p>본문</p>";
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile(content, "리액트 훅.html"));
+    expect(await screen.findByTestId("html-attached")).toHaveTextContent("리액트 훅.html");
     expect(screen.getByLabelText(/제목/)).toHaveValue("훅 총정리");
     expect(screen.getByRole("textbox", { name: /본문/ })).toHaveValue("HTML 파일로 정리한 내용입니다.");
     expect(screen.getByText(/짧은 소개를 넣어 두었습니다/)).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText(/카테고리/, { selector: "select" }), categories[0]!.id);
     await user.click(screen.getByRole("button", { name: "등록" }));
-    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-    const sent = JSON.parse(spy.mock.calls[0]![1]!.body as string) as Record<string, unknown>;
-    expect(sent.html).toEqual({ filename: "hooks.html", html: "<title>훅 총정리</title><p>본문</p>" });
-    expect(sent.title).toBe("훅 총정리");
-    resolve(json(201, { id: sent.id }));
     expect(await screen.findByText("상세 화면")).toBeInTheDocument();
+
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(["POST /api/posts", `PUT /api/posts/${createdId}/html`]);
+    const sent = JSON.parse(calls[0]!.init.body as string) as Record<string, unknown>;
+    expect(sent).not.toHaveProperty("html");
+    expect(sent.title).toBe("훅 총정리");
+    const put = calls[1]!.init;
+    const headers = put.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBe("text/html; charset=utf-8");
+    expect(headers["X-Filename"]).toBe(encodeURIComponent("리액트 훅.html"));
+    // The original bytes, not JSON.
+    expect(new TextDecoder().decode(new Uint8Array(put.body as ArrayBuffer))).toBe(content);
+  });
+
+  it("new post: when the file upload fails, keeps the form and says so; the retry edits the created post", async () => {
+    const calls: string[] = [];
+    let putOk = false;
+    let createdId = "";
+    stubFetch((url, init) => {
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (url === "/api/posts" && init?.method === "POST") {
+        createdId = (JSON.parse(init.body as string) as { id: string }).id;
+        return json(201, { id: createdId, html: null });
+      }
+      if (init?.method === "PATCH") return json(200, { id: createdId, html: null });
+      if (init?.method === "PUT") {
+        return putOk
+          ? json(200, { id: createdId })
+          : json(413, { error: { code: "VALIDATION", message: "파일은 10MB 이하만 올릴 수 있습니다", fields: { html: ["파일은 10MB 이하만 올릴 수 있습니다"] } } });
+      }
+      return undefined;
+    });
+    const { user, router } = setup();
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile("<title>t</title>"));
+    await screen.findByTestId("html-attached");
+    await user.selectOptions(screen.getByLabelText(/카테고리/, { selector: "select" }), categories[0]!.id);
+    await user.click(screen.getByRole("button", { name: "등록" }));
+
+    expect(await screen.findByText(/글 내용은 저장했지만 HTML 파일을 올리지 못했습니다/)).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/posts/new");
+    expect(screen.getByTestId("html-attached")).toHaveTextContent("hooks.html");
+    expect(screen.getAllByText("파일은 10MB 이하만 올릴 수 있습니다").length).toBeGreaterThan(0);
+
+    await user.clear(screen.getByLabelText(/제목/));
+    await user.type(screen.getByLabelText(/제목/), "고친 제목");
+    putOk = true;
+    await user.click(screen.getByRole("button", { name: "등록" }));
+    expect(await screen.findByText("상세 화면")).toBeInTheDocument();
+    expect(calls).toEqual([
+      "POST /api/posts",
+      `PUT /api/posts/${createdId}/html`,
+      `PATCH /api/posts/${createdId}`,
+      `PUT /api/posts/${createdId}/html`,
+    ]);
   });
 
   it("falls back to the file name for the title and keeps a typed title", async () => {
@@ -312,7 +371,7 @@ describe("PostEditorPage (edit) with HTML", () => {
     stubFetch((url, init) => {
       if (init?.method === "PATCH") return json(200, detail);
       if (init?.method === "PUT") {
-        bodies.push(JSON.parse(init.body as string));
+        bodies.push(new TextDecoder().decode(new Uint8Array(init.body as ArrayBuffer)));
         return json(500, { error: { code: "INTERNAL", message: "서버 오류 (x1)" } });
       }
       return undefined;
@@ -327,7 +386,7 @@ describe("PostEditorPage (edit) with HTML", () => {
     expect(router.state.location.pathname).toBe(`/posts/${postId}/edit`);
     expect(screen.getByLabelText(/제목/)).toHaveValue("고친 제목");
     expect(screen.getByTestId("html-attached")).toHaveTextContent("new.html");
-    expect(bodies).toEqual([{ filename: "new.html", html: "<p>new</p>" }]);
+    expect(bodies).toEqual(["<p>new</p>"]);
   });
 
   it("removes the file with DELETE after saving", async () => {

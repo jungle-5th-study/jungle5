@@ -88,3 +88,20 @@ pnpm exec wrangler d1 execute jungle5-restore --remote --file=restore.sql
 - `d1_migrations`가 저장소의 `migrations/`와 같다.
 
 확인이 끝나면 `wrangler.jsonc`의 `database_id`를 새 DB로 바꿔 배포한다.
+
+**큰 HTML 행 주의 (2026-10-07):** D1은 SQL 문장 하나를 100,000바이트까지만 받는다(`statement too long: SQLITE_TOOBIG`). 덤프의 INSERT는 행마다 한 줄이라 HTML이 약 100KB를 넘는 `post_html`·`post_html_chunks` 행은 위 `d1 execute --file`에서 실패한다. `reorder-d1-dump.py` 자체는 2MB짜리 줄도 문제없이 처리한다. 그런 덤프는 로컬 `sqlite3`로 먼저 복원해 확인한 뒤, 큰 값은 바인딩 값으로 넣는 방법으로 옮겨야 한다(TSD 9.3). 분기 리허설에서 이 경우를 확인한다.
+
+## 5. D1 크기 지켜보기 (TD-25)
+
+HTML 파일은 10MB까지 D1에 저장한다. 무료 플랜의 D1 DB 크기 상한은 500MB이고, 10MB 파일 50개면 찬다. 한 달에 한 번, 그리고 큰 파일이 많이 올라온 뒤에 크기를 본다.
+
+```sh
+pnpm exec wrangler d1 info jungle5-prod
+```
+
+`database_size`를 본다(읽기 전용 명령). 어떤 글이 큰지는 `SELECT post_id, filename, size FROM post_html ORDER BY size DESC LIMIT 20`으로 본다.
+
+- **400MB를 넘으면:** 운영자에게 알리고 다음 중 하나를 정한다.
+  - Workers 유료 플랜(월 $5, TSD TD-05)으로 바꾼다. D1 DB 상한이 10GB가 된다. 코드 변경은 없다.
+  - HTML만 R2로 옮긴다(R2 활성화에 결제 수단 등록 필요). `post_html_chunks`를 R2 객체로 바꾸는 설계·마이그레이션이 필요하다(새 TD).
+- **500MB에 닿으면** 쓰기가 실패한다(글·댓글 포함 사이트 전체). 그 전에 위 조치를 끝낸다.

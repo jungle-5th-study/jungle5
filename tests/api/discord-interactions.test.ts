@@ -5,7 +5,10 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { LIMITS } from "../../src/shared/constants";
+import { handleHtmlRequest } from "../../src/html-worker/index";
 import { MESSAGES } from "../../src/worker/discord/interactions";
+import { buildHtmlUrl } from "../../src/worker/lib/htmlSigning";
+import { HTML_CHUNK_BYTES } from "../../src/worker/lib/postHtml";
 import { call, GUILD_ID, login, makeApp, ORIGIN, SEED_CATEGORY_ID, type TestUser } from "../helpers";
 
 const COMMAND = "정글5에 올리기";
@@ -279,6 +282,33 @@ describe("정글5에 올리기 success path", () => {
     const user = await login(app);
     await signedCall(app, messageCommand({ invoker: user.discordUserId, attachments: [{ filename: "DDIA 7장.htm", size: 15 }] }));
     expect((await postsBy(user.memberId))[0]).toMatchObject({ title: "DDIA 7장", filename: "DDIA 7장.htm" });
+  });
+
+  it("a 10,000,000-byte attachment (Discord's free cap) is stored in pieces and served byte for byte", async () => {
+    expect(MESSAGES.tooLarge).toBe("HTML 파일은 10MB 이하만 올릴 수 있어요");
+    const n = LIMITS.htmlMaxBytes;
+    const bytes = new Uint8Array(n).fill(0x61);
+    const unit = new TextEncoder().encode("<p>격리 수준 😀</p>\n");
+    for (let i = 0; i + unit.length <= n; i += unit.length) bytes.set(unit, i);
+    bytes.set(new TextEncoder().encode("<title>큰 파일</title>"), 0);
+    const { fn, calls } = mockFetch({ [CDN]: bytes });
+    const app = makeApp({ fetch: fn });
+    const user = await login(app);
+    await signedCall(app, messageCommand({ invoker: user.discordUserId, attachments: [{ filename: "big.html", size: n }] }));
+    expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body).content).toMatch(/^등록했습니다/);
+
+    const [row] = await postsBy(user.memberId);
+    expect(row).toMatchObject({ title: "큰 파일", filename: "big.html", size: n, uploaded_via: "discord" });
+    const id = String(row!.id);
+    const pieces = await env.DB.prepare("SELECT count(*) AS n FROM post_html_chunks WHERE post_id = ?").bind(id).first<{ n: number }>();
+    expect(pieces?.n).toBe(Math.ceil(n / HTML_CHUNK_BYTES) - 1);
+
+    const url = await buildHtmlUrl(env.HTML_ORIGIN, env.HTML_SIGNING_KEY, id, Math.floor(Date.now() / 1000) + 60);
+    const served = await handleHtmlRequest(new Request(url), { DB: env.DB, HTML_SIGNING_KEY: env.HTML_SIGNING_KEY });
+    expect(served.headers.get("Content-Length")).toBe(String(n));
+    const got = new Uint8Array(await served.arrayBuffer());
+    expect(got.length).toBe(n);
+    expect(got.every((v, i) => v === bytes[i])).toBe(true);
   });
 
   it("the same message again → the existing link, no second post", async () => {

@@ -2,7 +2,7 @@
 // User HTML runs scripts, so it is never served from jungle5.xyz. This worker
 // lives on workers.dev (a public suffix → a different site), answers only
 // GET /v/:postId?exp=&sig= with a signature made by the main worker, and never
-// sets cookies. It reads the same D1 database (post_html) read-only.
+// sets cookies. It reads the same D1 database (post_html, post_html_chunks) read-only.
 import { verifyHtmlSignature } from "../worker/lib/htmlSigning";
 
 export interface HtmlEnv {
@@ -57,9 +57,40 @@ export async function handleHtmlRequest(request: Request, env: HtmlEnv, nowMs: n
   }
   if (exp * 1000 <= nowMs) return errorPage(410, "링크가 만료됐습니다. 정글5에서 다시 열어 주세요");
 
-  const row = await env.DB.prepare("SELECT html FROM post_html WHERE post_id = ?").bind(postId).first<{ html: string }>();
+  // TD-25: piece 0 is post_html.html, pieces 1..n are post_html_chunks. One
+  // batch is one D1 transaction, so both reads see the same upload.
+  const [head, rest] = await env.DB.batch([
+    env.DB.prepare("SELECT html, size, chunk_count FROM post_html WHERE post_id = ?").bind(postId),
+    env.DB.prepare("SELECT data FROM post_html_chunks WHERE post_id = ? ORDER BY seq").bind(postId),
+  ]);
+  const row = (head?.results as { html: string; size: number; chunk_count: number }[] | undefined)?.[0];
   if (!row) return errorPage(404, "찾을 수 없습니다");
-  return new Response(row.html, { status: 200, headers: HTML_HEADERS });
+  const chunks = (rest?.results ?? []) as { data: string }[];
+  if (chunks.length !== row.chunk_count) throw new Error(`post_html ${postId}: ${chunks.length} of ${row.chunk_count} chunks`);
+
+  return new Response(streamPieces([row.html, ...chunks.map((c) => c.data)], row.size), {
+    status: 200,
+    headers: { ...HTML_HEADERS, "Content-Length": String(row.size) },
+  });
+}
+
+/**
+ * The file as a stream of its pieces' UTF-8 bytes, one piece per pull, so no
+ * 10 MB string or buffer is ever built. FixedLengthStream makes the response
+ * carry `Content-Length: size` and fails it if the bytes do not add up.
+ */
+function streamPieces(pieces: (string | undefined)[], size: number): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let i = 0;
+  const source = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const piece = pieces[i];
+      pieces[i++] = undefined; // let the string go once it is encoded
+      if (piece !== undefined) controller.enqueue(encoder.encode(piece));
+      if (i >= pieces.length) controller.close();
+    },
+  });
+  return source.pipeThrough(new FixedLengthStream(size));
 }
 
 export default {

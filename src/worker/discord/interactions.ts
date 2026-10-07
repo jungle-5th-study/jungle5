@@ -9,9 +9,9 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { LIMITS } from "../../shared/constants";
 import { nameKey, uuidv7 } from "../../shared/ids";
-import { hasHtmlExtension, htmlContentSchema, htmlFilenameSchema } from "../../shared/schemas";
+import { hasHtmlExtension, htmlFilenameSchema } from "../../shared/schemas";
 import { categories, members, postHtml, posts } from "../db/schema";
-import { htmlTitle, upsertPostHtml } from "../lib/postHtml";
+import { decodeHtmlBytes, htmlTitle, writePostHtml } from "../lib/postHtml";
 import { discordUploadDenial, type Actor } from "../policies";
 import { isUniqueViolation } from "../routes/views";
 import type { AppEnv, Db } from "../types";
@@ -61,7 +61,7 @@ export const MESSAGES = {
   notMember: "먼저 https://jungle5.xyz 에 로그인해 주세요",
   noHtml: "HTML 파일(.html, .htm)이 첨부된 메시지에서만 쓸 수 있어요",
   multipleHtml: "HTML 파일이 여러 개예요. 파일 하나만 첨부된 메시지에서 써 주세요",
-  tooLarge: `HTML 파일은 ${(LIMITS.htmlMaxBytes / 1_000_000).toFixed(1)}MB 이하만 올릴 수 있어요`,
+  tooLarge: `HTML 파일은 ${LIMITS.htmlMaxBytes / 1_000_000}MB 이하만 올릴 수 있어요`,
   notUtf8: "UTF-8 텍스트로 된 HTML 파일만 올릴 수 있어요",
   wrongGuild: "정글5 Discord 서버에서만 쓸 수 있어요",
   unknown: "지원하지 않는 명령이에요",
@@ -188,16 +188,13 @@ async function uploadInBackground(db: Db, env: Env, client: DiscordAppClient, jo
       if (err instanceof Error && "status" in err && err.status === 413) throw new Refusal(MESSAGES.tooLarge);
       throw err;
     }
-    let html: string;
-    try {
-      html = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
-    } catch {
-      throw new Refusal(MESSAGES.notUtf8);
-    }
-    if (!htmlContentSchema.safeParse(html).success) throw new Refusal(MESSAGES.notUtf8);
+    // Same checks and pieces as a site upload (TD-25).
+    const decoded = decodeHtmlBytes(bytes);
+    if (!decoded.ok) throw new Refusal(decoded.problem === "too_large" ? MESSAGES.tooLarge : MESSAGES.notUtf8);
     const name = htmlFilenameSchema.safeParse(job.attachment.filename);
     const filename = name.success ? name.data : "discord.html";
-    const title = htmlTitle(html, filename);
+    // The <title> is searched only near the start, always inside the first piece.
+    const title = htmlTitle(decoded.pieces[0] ?? "", filename);
 
     const category = await db
       .select({ id: categories.id })
@@ -223,7 +220,7 @@ async function uploadInBackground(db: Db, env: Env, client: DiscordAppClient, jo
           createdAt: job.now,
           updatedAt: job.now,
         }),
-        upsertPostHtml(db, postId, { filename, html }, job.now, "discord", job.messageId),
+        ...writePostHtml(db, postId, { filename, pieces: decoded.pieces, size: decoded.size }, job.now, "discord", job.messageId),
       ]);
     } catch (err) {
       // Same message uploaded concurrently: the batch rolled back; point at the winner.
