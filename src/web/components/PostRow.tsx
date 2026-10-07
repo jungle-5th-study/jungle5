@@ -1,4 +1,5 @@
 import type { PostListItem } from "../../shared/api";
+import { plainExcerpt } from "../lib/format";
 import { AuthorName, HiddenBadge, ListRow, MetaList, Time } from "./ui";
 
 /** A knowledge row (UD-09): title, 2-line excerpt, category · author · time · #tags · 댓글 N · linked round. */
@@ -20,21 +21,22 @@ export function PostRow({
     <ListRow
       to={`/posts/${post.id}`}
       title={post.title}
-      excerpt={showExcerpt ? post.excerpt : undefined}
+      excerpt={showExcerpt ? plainExcerpt(post.excerpt) : undefined}
       compact={compact}
       badge={post.hidden ? <HiddenBadge /> : undefined}
+      titleSuffix={
+        post.html ? (
+          <span
+            title={`HTML 파일: ${post.html.filename}`}
+            className="rounded bg-accent-subtle px-1.5 py-px text-[11px] leading-4 font-semibold text-accent-subtle-text"
+          >
+            HTML
+          </span>
+        ) : undefined
+      }
       meta={
         <MetaList
           items={[
-            post.html && (
-              <span
-                key="h"
-                title={`HTML 파일: ${post.html.filename}`}
-                className="rounded bg-accent-subtle px-1 text-[11px] leading-[18px] font-semibold text-accent-subtle-text"
-              >
-                HTML
-              </span>
-            ),
             showCategory && post.category.name,
             <AuthorName key="a" author={post.author} />,
             <Time key="t" ms={post.createdAt} />,

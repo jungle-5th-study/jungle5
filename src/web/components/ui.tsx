@@ -153,6 +153,7 @@ export function ListRow({
   excerpt,
   meta: metaContent,
   badge,
+  titleSuffix,
   compact = false,
 }: {
   to: string;
@@ -160,10 +161,12 @@ export function ListRow({
   excerpt?: string;
   meta: ReactNode;
   badge?: ReactNode;
+  /** Small marker after the title (e.g. the HTML badge), vertically centred on the title line. */
+  titleSuffix?: ReactNode;
   compact?: boolean;
 }) {
   return (
-    <article className={`group relative flex flex-col border-b border-border ${compact ? "gap-0.5 py-3" : "gap-1 py-[18px]"}`}>
+    <article className={`group relative flex flex-col border-b border-border px-3 transition-colors hover:bg-surface ${compact ? "gap-0.5 py-3" : "gap-1 py-[18px]"}`}>
       <h3 className={`${compact ? "text-base" : "text-[17px]"} leading-snug font-semibold break-words text-text`}>
         {badge && <span className="mr-2 align-[2px]">{badge}</span>}
         <Link
@@ -172,6 +175,7 @@ export function ListRow({
         >
           {title}
         </Link>
+        {titleSuffix && <span className="ml-2 inline-flex align-middle">{titleSuffix}</span>}
       </h3>
       {excerpt && <p className="line-clamp-2 text-sm break-words text-muted">{excerpt}</p>}
       <p className={`flex flex-wrap gap-x-1.5 ${meta}`}>{metaContent}</p>

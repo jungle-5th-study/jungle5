@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatWeekRange } from "./format";
+import { formatWeekRange, plainExcerpt } from "./format";
 
 // Instants in KST (UTC+9).
 const kst = (iso: string) => Date.parse(`${iso}+09:00`);
@@ -23,5 +23,22 @@ describe("formatWeekRange (Monday–Sunday, KST)", () => {
 
   it("crosses month and year ends", () => {
     expect(formatWeekRange(kst("2026-12-31T12:00:00"))).toBe("12월 28일 – 1월 3일");
+  });
+});
+
+describe("plainExcerpt", () => {
+  it("keeps link and image text, drops Markdown syntax", () => {
+    expect(
+      plainExcerpt("Discord에서 올린 HTML입니다. [원래 메시지](https://discord.com/channels/1/2/3)"),
+    ).toBe("Discord에서 올린 HTML입니다. 원래 메시지");
+    expect(plainExcerpt("## 핵심\n\n- **키 범위** 파티셔닝\n- `해시` ![도식](a.png)")).toBe("핵심 키 범위 파티셔닝 해시 도식");
+    expect(plainExcerpt("> 인용\n\n| a | b |\n|---|---|\n| 1 | 2 |")).toBe("인용 a b 1 2");
+  });
+
+  it("shortens bare long URLs and handles a cut-off link at the 200-char boundary", () => {
+    expect(plainExcerpt("참고 https://example.com/a/very/long/path/that/keeps/going/on")).toBe(
+      "참고 https://example.com/a/very/long/path/…",
+    );
+    expect(plainExcerpt("끝 [원래 메시지](https://disc")).toBe("끝 원래 메시지");
   });
 });

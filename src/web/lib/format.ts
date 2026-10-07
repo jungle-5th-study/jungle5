@@ -50,3 +50,22 @@ export function formatWeekRange(now: number): string {
   const md = (d: Date) => `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일`;
   return `${md(monday)} – ${md(sunday)}`;
 }
+
+/**
+ * Markdown → plain text for list excerpts (the API returns the first 200
+ * characters of the raw body). Keeps link and image text, drops syntax.
+ */
+export function plainExcerpt(markdown: string): string {
+  return markdown
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/!\[([^\]]*)\]\([^)]*\)?/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)?/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+/gm, "")
+    .replace(/^\s*\|?[\s:|-]+\|[\s:|-]*$/gm, " ")
+    .replace(/[|]/g, " ")
+    .replace(/(\*\*|__|~~|\*|_|`)/g, "")
+    .replace(/https?:\/\/\S+/g, (url) => (url.length > 40 ? `${url.slice(0, 37)}…` : url))
+    .replace(/\s+/g, " ")
+    .trim();
+}
