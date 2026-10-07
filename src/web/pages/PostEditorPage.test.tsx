@@ -63,6 +63,21 @@ async function fillValidForm(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByRole("textbox", { name: /본문/ }), "본문 내용");
 }
 
+/** What the server would store: the SPA sends the file gzipped (TD-25). */
+async function gunzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
+  const stream = new DecompressionStream("gzip");
+  const writer = stream.writable.getWriter();
+  void writer.write(bytes).then(() => writer.close());
+  const reader = stream.readable.getReader();
+  const parts: number[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(...value);
+  }
+  return Uint8Array.from(parts);
+}
+
 describe("PostEditorPage (new)", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -203,7 +218,7 @@ describe("PostEditorPage: HTML file (D-30)", () => {
 
   const htmlFile = (content: string, name = "hooks.html") => new File([content], name, { type: "text/html" });
 
-  it("prefills title from <title> and the required body; creates the post, then PUTs the raw file", async () => {
+  it("prefills title from <title> and the required body; creates the post, then PUTs the gzipped file", async () => {
     const calls: { method: string; url: string; init: RequestInit }[] = [];
     let createdId = "";
     stubFetch((url, init) => {
@@ -233,10 +248,83 @@ describe("PostEditorPage: HTML file (D-30)", () => {
     expect(sent.title).toBe("훅 총정리");
     const put = calls[1]!.init;
     const headers = put.headers as Record<string, string>;
-    expect(headers["Content-Type"]).toBe("text/html; charset=utf-8");
+    expect(headers["Content-Type"]).toBe("application/gzip");
     expect(headers["X-Filename"]).toBe(encodeURIComponent("리액트 훅.html"));
-    // The original bytes, not JSON.
-    expect(new TextDecoder().decode(new Uint8Array(put.body as ArrayBuffer))).toBe(content);
+    expect(headers["X-Original-Size"]).toBe(String(new TextEncoder().encode(content).length));
+    // The gzip of the original bytes, not JSON.
+    const body = put.body as Uint8Array<ArrayBuffer>;
+    expect(Array.from(body.subarray(0, 3))).toEqual([0x1f, 0x8b, 0x08]);
+    expect(new TextDecoder().decode(await gunzip(body))).toBe(content);
+  });
+
+  it("shows the limits, the compressed size, and a clear error with both sizes when the gzip is over 10 MB", async () => {
+    const { user } = setup();
+    expect(screen.getByText(/원본 50MB, 압축 후 10MB 이하/)).toBeInTheDocument();
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile("<p>정글</p>".repeat(100_000), "big.html"));
+    expect(await screen.findByTestId("html-attached")).toHaveTextContent("big.html");
+    expect(screen.getByText(/1\.3MB \(압축 \d+(\.\d)?KB\)/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "제거" }));
+
+    const compressed = new Uint8Array(12_000_000);
+    class FakeCompressionStream {
+      readonly writable: WritableStream<Uint8Array>;
+      readonly readable: ReadableStream<Uint8Array>;
+      constructor() {
+        const t = new TransformStream<Uint8Array, Uint8Array>({ transform: () => undefined, flush: (c) => c.enqueue(compressed) });
+        this.writable = t.writable;
+        this.readable = t.readable;
+      }
+    }
+    vi.stubGlobal("CompressionStream", FakeCompressionStream);
+    try {
+      await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile("<p>x</p>".repeat(2_000_000), "huge.html"));
+      expect(
+        await screen.findByText("압축해도 너무 큽니다 (원본 16MB → 압축 12MB). 원본 50MB, 압축 후 10MB 이하만 올릴 수 있습니다."),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("html-attached")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("an original over 50 MB is refused before reading", async () => {
+    const { user } = setup();
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), new File([new Uint8Array(50_000_001)], "huge.html"));
+    expect(
+      await screen.findByText("파일이 너무 큽니다 (50MB). 원본 50MB, 압축 후 10MB 이하만 올릴 수 있습니다."),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("html-attached")).toBeNull();
+  });
+
+  it("without CompressionStream the raw file is sent as text/html", async () => {
+    vi.stubGlobal("CompressionStream", undefined);
+    try {
+      const calls: { method: string; init: RequestInit }[] = [];
+      let createdId = "";
+      stubFetch((url, init) => {
+        calls.push({ method: init?.method ?? "GET", init: init ?? {} });
+        if (url === "/api/posts" && init?.method === "POST") {
+          createdId = (JSON.parse(init.body as string) as { id: string }).id;
+          return json(201, { id: createdId });
+        }
+        if (init?.method === "PUT") return json(200, { id: createdId });
+        return undefined;
+      });
+      const { user } = setup();
+      const content = "<title>옛 브라우저</title><p>본문</p>";
+      await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile(content));
+      await screen.findByTestId("html-attached");
+      await user.selectOptions(screen.getByLabelText(/카테고리/, { selector: "select" }), categories[0]!.id);
+      await user.click(screen.getByRole("button", { name: "등록" }));
+      expect(await screen.findByText("상세 화면")).toBeInTheDocument();
+      const put = calls.find((c) => c.method === "PUT")!.init;
+      const headers = put.headers as Record<string, string>;
+      expect(headers["Content-Type"]).toBe("text/html; charset=utf-8");
+      expect(headers["X-Original-Size"]).toBeUndefined();
+      expect(new TextDecoder().decode(put.body as Uint8Array)).toBe(content);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("new post: when the file upload fails, keeps the form and says so; the retry edits the created post", async () => {
@@ -325,7 +413,7 @@ describe("PostEditorPage (edit) with HTML", () => {
     links: [],
     roundId: null,
     round: null,
-    html: { filename: "old.html", size: 2048, uploadedAt: 1 },
+    html: { filename: "old.html", size: 2048, uploadedAt: 1, compressed: false },
     hidden: false,
     createdAt: 1,
     updatedAt: 2,
@@ -354,7 +442,7 @@ describe("PostEditorPage (edit) with HTML", () => {
     stubFetch((url, init) => {
       calls.push(`${init?.method} ${url}`);
       if (init?.method === "PATCH") return json(200, { ...detail, title: "새 제목" });
-      if (init?.method === "PUT") return json(200, { ...detail, html: { filename: "new.html", size: 10, uploadedAt: 3 } });
+      if (init?.method === "PUT") return json(200, { ...detail, html: { filename: "new.html", size: 10, uploadedAt: 3, compressed: true } });
       return undefined;
     });
     const { user, router } = setupEdit();
@@ -367,11 +455,11 @@ describe("PostEditorPage (edit) with HTML", () => {
   });
 
   it("keeps the form and the file when the file step fails, and says which step failed", async () => {
-    const bodies: unknown[] = [];
+    const bodies: Promise<string>[] = [];
     stubFetch((url, init) => {
       if (init?.method === "PATCH") return json(200, detail);
       if (init?.method === "PUT") {
-        bodies.push(new TextDecoder().decode(new Uint8Array(init.body as ArrayBuffer)));
+        bodies.push(gunzip(init.body as Uint8Array<ArrayBuffer>).then((b) => new TextDecoder().decode(b)));
         return json(500, { error: { code: "INTERNAL", message: "서버 오류 (x1)" } });
       }
       return undefined;
@@ -386,7 +474,7 @@ describe("PostEditorPage (edit) with HTML", () => {
     expect(router.state.location.pathname).toBe(`/posts/${postId}/edit`);
     expect(screen.getByLabelText(/제목/)).toHaveValue("고친 제목");
     expect(screen.getByTestId("html-attached")).toHaveTextContent("new.html");
-    expect(bodies).toEqual(["<p>new</p>"]);
+    expect(await Promise.all(bodies)).toEqual(["<p>new</p>"]);
   });
 
   it("removes the file with DELETE after saving", async () => {

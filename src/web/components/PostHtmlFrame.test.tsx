@@ -7,7 +7,7 @@ import { PostDetailPage } from "../pages/PostDetailPage";
 import { json, renderRoutes, stubFetch, testMe } from "../test/render";
 import { HTML_FRAME_SANDBOX, PostHtmlFrame } from "./PostHtmlFrame";
 
-const meta = { filename: "hooks.html", size: 312_400, uploadedAt: 1 };
+const meta = { filename: "hooks.html", size: 312_400, uploadedAt: 1, compressed: false };
 const signed = (n: number) => `http://localhost:8788/v/p1?exp=${n}&sig=abc${n}`;
 
 describe("PostHtmlFrame (TD-26)", () => {

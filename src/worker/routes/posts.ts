@@ -5,6 +5,7 @@ import type { PostHtmlUrl } from "../../shared/api";
 import { HTML_URL_TTL_SECONDS, LIMITS } from "../../shared/constants";
 import { nameKey, uuidv7 } from "../../shared/ids";
 import {
+  HTML_GZIP_TOO_LARGE_MESSAGE,
   HTML_TOO_LARGE_MESSAGE,
   htmlFilenameSchema,
   postCreateSchema,
@@ -14,7 +15,14 @@ import {
 } from "../../shared/schemas";
 import { categories, postHtml, posts, postTags, tags } from "../db/schema";
 import { buildHtmlUrl } from "../lib/htmlSigning";
-import { decodeHtmlBytes, deletePostHtml, readBodyCapped, writePostHtml } from "../lib/postHtml";
+import {
+  checkGzipBytes,
+  decodeHtmlBytes,
+  deletePostHtml,
+  readBodyCapped,
+  writePostHtml,
+  type HtmlFile,
+} from "../lib/postHtml";
 import {
   AppError,
   forbidden,
@@ -267,35 +275,60 @@ export const postRoutes = new Hono<AppEnv>()
     return c.json(await loadPostDetail(db, actor, id));
   })
 
-  // Attached HTML (D-30, TD-25, TD-26). The body is the raw file
-  // (`Content-Type: text/html; charset=utf-8`, the CSRF guard's one non-JSON
-  // route) and `X-Filename` its percent-encoded UTF-8 name: no JSON wrapping,
-  // so a 10 MB file costs no JSON parse. Replaces any existing file. Counts as
-  // a content edit (updated_at). Queries: session + post + batch + detail (3).
+  // Attached HTML (D-30, TD-25, TD-26). The body is the file itself, no JSON
+  // wrapping (a 10 MB body costs no JSON parse), in one of two forms; these
+  // two content types are the CSRF guard's only non-JSON ones:
+  // - `Content-Type: application/gzip` (what the SPA sends): the file gzipped
+  //   in the browser, ≤ 10,000,000 bytes, plus `X-Original-Size` (decimal,
+  //   1..50,000,000). Checked structurally and stored as is, never
+  //   decompressed here (TSD 3.2).
+  // - `Content-Type: text/html; charset=utf-8`: the raw file, ≤ 10,000,000
+  //   bytes, checked as strict UTF-8 (API users, SPA bundles from before gzip).
+  // `X-Filename` is the percent-encoded UTF-8 name. Replaces any existing file.
+  // Counts as a content edit (updated_at). Queries: session + post + batch + detail (3).
   .put("/:id/html", async (c) => {
     const actor = c.get("actor");
     const db = c.get("db");
     const id = c.req.param("id");
     const filename = uploadFilename(c.req.header("X-Filename"));
-    const charset = /;\s*charset\s*=\s*"?([^";\s]*)/i.exec(c.req.header("Content-Type") ?? "")?.[1];
-    if (charset !== undefined && !/^utf-?8$/i.test(charset)) throw validationError({ html: [NOT_UTF8] });
+    const contentType = c.req.header("Content-Type") ?? "";
+    const gzip = /^application\/gzip(\s*;|$)/i.test(contentType);
+    let originalSize = 0;
+    if (gzip) {
+      originalSize = originalSizeHeader(c.req.header("X-Original-Size"));
+    } else {
+      const charset = /;\s*charset\s*=\s*"?([^";\s]*)/i.exec(contentType)?.[1];
+      if (charset !== undefined && !/^utf-?8$/i.test(charset)) throw validationError({ html: [NOT_UTF8] });
+    }
+    const tooLarge = gzip ? gzipTooLarge : htmlTooLarge;
     // Refuse a declared oversize body before reading it.
-    if (Number(c.req.header("Content-Length") ?? "0") > LIMITS.htmlMaxBytes) throw htmlTooLarge();
+    if (Number(c.req.header("Content-Length") ?? "0") > LIMITS.htmlMaxStoredBytes) throw tooLarge();
 
     const post = await loadOwnedPost(db, actor, id);
     if (!canEditPostHtml(actor, post)) throw forbidden();
 
-    const bytes = await readBodyCapped(c.req.raw.body, LIMITS.htmlMaxBytes);
-    if (!bytes) throw htmlTooLarge();
-    const decoded = decodeHtmlBytes(bytes);
-    if (!decoded.ok) {
-      if (decoded.problem === "too_large") throw htmlTooLarge();
-      throw validationError({ html: [decoded.problem === "empty" ? "빈 파일입니다" : NOT_UTF8] });
+    const bytes = await readBodyCapped(c.req.raw.body, LIMITS.htmlMaxStoredBytes);
+    if (!bytes) throw tooLarge();
+    let file: HtmlFile;
+    if (gzip) {
+      const problem = checkGzipBytes(bytes, originalSize);
+      if (problem === "too_large") throw tooLarge();
+      if (problem === "empty") throw validationError({ html: ["빈 파일입니다"] });
+      if (problem === "not_gzip") throw validationError({ html: ["gzip으로 압축한 파일이 아닙니다"] });
+      if (problem === "size_mismatch") throw validationError({ html: ["압축한 파일과 원본 크기가 맞지 않습니다"] });
+      file = { filename, encoding: "gzip", gzip: bytes, size: originalSize };
+    } else {
+      const decoded = decodeHtmlBytes(bytes);
+      if (!decoded.ok) {
+        if (decoded.problem === "too_large") throw tooLarge();
+        throw validationError({ html: [decoded.problem === "empty" ? "빈 파일입니다" : NOT_UTF8] });
+      }
+      file = { filename, encoding: "identity", pieces: decoded.pieces, size: decoded.size };
     }
     const now = c.get("deps").now();
     await db.batch([
       db.update(posts).set({ updatedAt: now }).where(eq(posts.id, id)),
-      ...writePostHtml(db, id, { filename, pieces: decoded.pieces, size: decoded.size }, now, "site"),
+      ...writePostHtml(db, id, file, now, "site"),
     ]);
     return c.json(await loadPostDetail(db, actor, id));
   })
@@ -347,6 +380,18 @@ const NOT_UTF8 = "UTF-8 텍스트 파일만 올릴 수 있습니다";
 /** 413 with the usual VALIDATION envelope, so the editor shows it on the file field. */
 const htmlTooLarge = () =>
   new AppError(413, "VALIDATION", HTML_TOO_LARGE_MESSAGE, { fields: { html: [HTML_TOO_LARGE_MESSAGE] } });
+const gzipTooLarge = () =>
+  new AppError(413, "VALIDATION", HTML_GZIP_TOO_LARGE_MESSAGE, { fields: { html: [HTML_GZIP_TOO_LARGE_MESSAGE] } });
+
+/** `X-Original-Size` of a gzip upload: a decimal integer 1..50,000,000, else 422 on `html`. */
+function originalSizeHeader(header: string | undefined): number {
+  const raw = (header ?? "").trim();
+  if (!/^\d{1,9}$/.test(raw)) throw validationError({ html: ["원본 크기(X-Original-Size)가 필요합니다"] });
+  const n = Number(raw);
+  if (n < 1) throw validationError({ html: ["빈 파일입니다"] });
+  if (n > LIMITS.htmlMaxOriginalBytes) throw validationError({ html: [HTML_GZIP_TOO_LARGE_MESSAGE] });
+  return n;
+}
 
 /** `X-Filename`: percent-encoded UTF-8 (header values are ASCII). 422 on `filename`. */
 function uploadFilename(header: string | undefined): string {

@@ -27,11 +27,18 @@ export const LIMITS = {
   scopeExcerpt: 200,
   // Attached HTML file (D-30, TD-25)
   /**
-   * UTF-8 bytes. One D1 value is capped at 2,000,000 bytes, so the server
-   * stores a file in pieces (TD-25, migration 0004). 10 MB is also Discord's
-   * free upload cap (D-30).
+   * Original (uncompressed) UTF-8 bytes of a site upload. The SPA checks it and
+   * gzips the file; the server trusts the declared size (TD-25, TSD 3.2).
    */
-  htmlMaxBytes: 10_000_000,
+  htmlMaxOriginalBytes: 50_000_000,
+  /**
+   * Bytes the server receives and stores: the gzip body of a site upload, or a
+   * raw (identity) text/html body. One D1 value is capped at 2,000,000 bytes,
+   * so files are stored in pieces (TD-25, migrations 0004/0005).
+   */
+  htmlMaxStoredBytes: 10_000_000,
+  /** Discord message command (D-32): stored as-is, no server-side compression. 10 MB is Discord's free upload cap. */
+  htmlDiscordMaxBytes: 10_000_000,
   htmlFilenameMax: 200,
 } as const;
 

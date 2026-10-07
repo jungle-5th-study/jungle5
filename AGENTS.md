@@ -20,7 +20,7 @@ src/web/       React SPA: main.tsx, router.tsx, pages/, components/, lib/; tests
 migrations/    SQL migrations applied by wrangler (0000_init.sql has a hand-added seed row; 0001 is hand-written)
 tests/         unit/ (policy tables), api/ (integration: real workerd + local D1), migration tests, helpers.ts
 docs/          prd.md (product decisions D-xx), tsd.md (technical decisions TD-xx), ui.md (UI decisions UD-xx), operations.md
-scripts/       ops scripts (build-d1-restore.py turns a D1 export into importable restore SQL)
+scripts/       ops scripts (build-d1-restore.py turns a D1 export into importable restore SQL; test-d1-restore.py round-trips it through local D1)
 ```
 
 ## Commands
@@ -60,7 +60,7 @@ If code and docs disagree, ask or follow the docs; do not silently "fix" a decis
 - **Markdown is rendered client-side only** with react-markdown + remark-gfm + rehype-sanitize (TD-12). The server stores raw Markdown. Never use `dangerouslySetInnerHTML`; links are http/https only.
 - **Test login exists only when `ENV=test`** (`POST /auth/test-login`, TSD 9.1). Never register it or the dev login form in production code paths.
 - **Times:** store UTC epoch ms; display in KST (`src/shared/time.ts`, `src/web/lib/kst.ts`). KST has no DST.
-- **Mutations need CSRF headers:** `Origin` must equal `APP_ORIGIN` and `Content-Type: application/json` (also for body-less DELETE). The one exception is the raw file upload `PUT /api/posts/:id/html`, which needs `Content-Type: text/html` instead (TD-25).
+- **Mutations need CSRF headers:** `Origin` must equal `APP_ORIGIN` and `Content-Type: application/json` (also for body-less DELETE). The one exception is the file upload `PUT /api/posts/:id/html`, which needs `Content-Type: text/html` or `application/gzip` instead (TD-25; the SPA sends gzip, which the server stores without decompressing).
 - **Errors** use `{ error: { code, message } }` with the codes in `src/shared/errors.ts` and TSD §7. Hidden content returns 404, not 403.
 - **UI copy is Korean**, short and plain, matching existing screens. Code comments and identifiers are English.
 

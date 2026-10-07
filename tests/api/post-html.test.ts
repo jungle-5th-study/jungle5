@@ -61,14 +61,14 @@ describe("PUT /api/posts/:id/html (raw file body)", () => {
     const res = await putHtml(timedApp, author.cookie, post.id, HTML, "정리 노트.html");
     expect(res.status).toBe(200);
     const size = enc.encode(HTML).length;
-    expect(res.json.html).toEqual({ filename: "정리 노트.html", size, uploadedAt: now });
+    expect(res.json.html).toEqual({ filename: "정리 노트.html", size, uploadedAt: now, compressed: false });
     expect(res.json.updatedAt).toBe(now);
     expect(res.json).not.toHaveProperty("html.html");
     expect(await htmlRow(post.id)).toMatchObject({ html: HTML, size, chunk_count: 0, uploaded_via: "site", discord_message_id: null });
 
     const list = await call(timedApp, "GET", "/api/posts", { cookie: author.cookie });
     const item = list.json.items.find((p: { id: string }) => p.id === post.id);
-    expect(item.html).toEqual({ filename: "정리 노트.html", size, uploadedAt: now });
+    expect(item.html).toEqual({ filename: "정리 노트.html", size, uploadedAt: now, compressed: false });
     expect(JSON.stringify(list.json)).not.toContain("트랜잭션");
 
     // Replace
@@ -181,14 +181,14 @@ describe("PUT /api/posts/:id/html (raw file body)", () => {
       expect(res.json.error).toEqual({ code: "VALIDATION", message: TOO_LARGE, fields: { html: [TOO_LARGE] } });
     };
     // Declared too large: refused even though the body is tiny, before the post is even looked up.
-    const declared = { headers: { "Content-Length": String(LIMITS.htmlMaxBytes + 1) } };
+    const declared = { headers: { "Content-Length": String(LIMITS.htmlMaxStoredBytes + 1) } };
     tooLarge(await putHtml(app, author.cookie, post.id, "<p>x</p>", "a.html", declared));
     tooLarge(await putHtml(app, other.cookie, uuidv7(), "<p>x</p>", "a.html", declared));
     // Actually too large, sent without a length (streamed).
     let sent = 0;
     const stream = new ReadableStream<Uint8Array>({
       pull(c) {
-        const n = Math.min(2_000_000, LIMITS.htmlMaxBytes + 1 - sent);
+        const n = Math.min(2_000_000, LIMITS.htmlMaxStoredBytes + 1 - sent);
         if (n <= 0) return c.close();
         sent += n;
         c.enqueue(new Uint8Array(n).fill(0x61));
@@ -196,8 +196,8 @@ describe("PUT /api/posts/:id/html (raw file body)", () => {
     });
     tooLarge(await putHtml(app, author.cookie, post.id, stream as unknown as Uint8Array));
     // One byte over, with a correct length; multi-byte characters count as bytes.
-    tooLarge(await putHtml(app, author.cookie, post.id, mixedBytes(LIMITS.htmlMaxBytes + 1)));
-    tooLarge(await putHtml(app, author.cookie, post.id, "한".repeat(Math.floor(LIMITS.htmlMaxBytes / 3) + 1)));
+    tooLarge(await putHtml(app, author.cookie, post.id, mixedBytes(LIMITS.htmlMaxStoredBytes + 1)));
+    tooLarge(await putHtml(app, author.cookie, post.id, "한".repeat(Math.floor(LIMITS.htmlMaxStoredBytes / 3) + 1)));
     expect(await htmlRow(post.id)).toBeNull();
     // A non-author with a valid size still gets 403, not a size error.
     expect((await putHtml(app, other.cookie, post.id, "<p>x</p>")).status).toBe(403);
@@ -212,12 +212,12 @@ describe("PUT /api/posts/:id/html (raw file body)", () => {
       HTML_CHUNK_BYTES + 1,
       2 * HTML_CHUNK_BYTES - 1,
       2 * HTML_CHUNK_BYTES + 1,
-      LIMITS.htmlMaxBytes,
+      LIMITS.htmlMaxStoredBytes,
     ];
     for (const n of sizes) {
       const bytes = mixedBytes(n);
       // Prefix a BOM (kept as uploaded) to the largest one.
-      if (n === LIMITS.htmlMaxBytes) bytes.set([0xef, 0xbb, 0xbf], 0);
+      if (n === LIMITS.htmlMaxStoredBytes) bytes.set([0xef, 0xbb, 0xbf], 0);
       const res = await putHtml(app, author.cookie, post.id, bytes, `f${n}.html`);
       expect(res.status, String(n)).toBe(200);
       expect(res.json.html.size).toBe(n);

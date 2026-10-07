@@ -16,12 +16,21 @@ then indexes. A text value too long for one statement is inserted as its
 first piece and completed with `UPDATE ... SET col = col || '<piece>'`
 statements, each kept under MAX_STATEMENT_BYTES.
 
+BLOB values (post_html_blobs.data, gzip pieces of up to 950,000 bytes, TD-25)
+are written by the export as X'<hex>' literals, twice their size. `||` on
+blobs yields TEXT, so a long blob is inserted as X'' and completed with
+`UPDATE ... SET col = unhex(hex(col) || '<hex piece>')`. The intermediate hex
+string is twice the blob, so a blob must stay under MAX_BLOB_BYTES to fit
+D1's 2,000,000-byte value cap (unhex() verified on local D1, TSD 9.3).
+
 Usage: python3 -I scripts/build-d1-restore.py backup.sql > restore.sql
+Check: python3 -I scripts/test-d1-restore.py (round trip through local D1)
 """
 import sqlite3
 import sys
 
 MAX_STATEMENT_BYTES = 90_000  # D1 limit is 100,000; keep a margin
+MAX_BLOB_BYTES = 999_999  # hex(blob) must stay under D1's 2,000,000-byte value cap
 SKIP_TABLES = {"sqlite_sequence"}  # recreated by SQLite from AUTOINCREMENT ids
 
 
@@ -69,17 +78,27 @@ def row_statements(table: str, columns, pk_columns, row):
     if not pk_columns:
         raise SystemExit(f"row in {table} exceeds the statement limit and the table has no primary key")
 
-    # Insert with long text columns emptied, then append them piece by piece.
-    long_cols = [i for i, v in enumerate(row) if isinstance(v, str) and utf8_len(literal(v)) > 1000]
+    # Insert with long text/blob columns emptied, then append them piece by piece.
+    long_cols = [i for i, v in enumerate(row) if isinstance(v, (str, bytes)) and utf8_len(literal(v)) > 1000]
     first = list(values)
     for i in long_cols:
-        first[i] = "''"
+        first[i] = "X''" if isinstance(row[i], bytes) else "''"
     out = [f"INSERT INTO {ident(table)} ({cols}) VALUES ({', '.join(first)});"]
     where = " AND ".join(f"{ident(c)} = {literal(row[columns.index(c)])}" for c in pk_columns)
     for i in long_cols:
         col = ident(columns[i])
+        value = row[i]
+        if isinstance(value, bytes):
+            if len(value) > MAX_BLOB_BYTES:
+                raise SystemExit(f"a blob in {table}.{columns[i]} has {len(value)} bytes; its hex form would exceed D1's value cap")
+            overhead = utf8_len(f"UPDATE {ident(table)} SET {col} = unhex(hex({col}) || '') WHERE {where};") + 16
+            step = (MAX_STATEMENT_BYTES - overhead) // 2  # bytes per statement; 2 hex digits each
+            for start in range(0, len(value), step):
+                piece = value[start : start + step].hex()
+                out.append(f"UPDATE {ident(table)} SET {col} = unhex(hex({col}) || '{piece}') WHERE {where};")
+            continue
         overhead = utf8_len(f"UPDATE {ident(table)} SET {col} = {col} || ;  WHERE {where};") + 16
-        for piece in split_text(row[i], MAX_STATEMENT_BYTES - overhead):
+        for piece in split_text(value, MAX_STATEMENT_BYTES - overhead):
             out.append(f"UPDATE {ident(table)} SET {col} = {col} || {literal(piece)} WHERE {where};")
     for s in out:
         if utf8_len(s) > MAX_STATEMENT_BYTES:

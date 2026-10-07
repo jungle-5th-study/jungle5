@@ -4,8 +4,8 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import worker, { handleHtmlRequest, type HtmlEnv } from "../../src/html-worker/index";
 import { buildHtmlUrl, signHtmlUrl } from "../../src/worker/lib/htmlSigning";
-import { HTML_CHUNK_BYTES } from "../../src/worker/lib/postHtml";
-import { createPost, createPostWithHtml, login, makeApp, uuidv7 } from "../helpers";
+import { HTML_BLOB_BYTES, HTML_CHUNK_BYTES } from "../../src/worker/lib/postHtml";
+import { createPost, createPostWithGzipHtml, createPostWithHtml, gunzip, gzip, login, makeApp, uuidv7 } from "../helpers";
 
 const app = makeApp();
 const KEY = env.HTML_SIGNING_KEY;
@@ -182,5 +182,96 @@ describe("jungle5-html worker", () => {
     const res = await worker.fetch(new Request(url), { DB: env.DB, HTML_SIGNING_KEY: "" });
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain("secret");
+  });
+});
+
+describe("jungle5-html worker: gzip-stored files (TD-25, migration 0005)", () => {
+  /** Incompressible bytes, so the gzip spans several 950,000-byte pieces. */
+  function noise(n: number): Uint8Array {
+    const out = new Uint8Array(n);
+    let x = 12_345;
+    for (let i = 0; i < n; i++) {
+      x = (Math.imul(x, 1_103_515_245) + 12_345) >>> 0;
+      out[i] = x >>> 24;
+    }
+    return out;
+  }
+
+  async function readAll(body: ReadableStream<Uint8Array>) {
+    const reader = body.getReader();
+    const parts: Uint8Array[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+    }
+    const out = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
+    let o = 0;
+    for (const p of parts) {
+      out.set(p, o);
+      o += p.length;
+    }
+    return { parts: parts.length, bytes: out };
+  }
+
+  it("sends the stored gzip bytes as is, with Content-Encoding: gzip, Content-Length = stored size and every security header", async () => {
+    const html = "<!doctype html><title>t</title><script>document.cookie='a=b'</script><p>압축 안녕</p>".repeat(20);
+    const original = new TextEncoder().encode(html);
+    const user = await login(app);
+    const post = await createPostWithGzipHtml(app, user, original);
+    const gz = await gzip(original);
+
+    const res = await fetchWorker(await buildHtmlUrl(ORIGIN, KEY, post.id, nowSec() + 3600));
+    expect(res.status).toBe(200);
+    expect(Object.fromEntries(res.headers)).toEqual({
+      ...EXPECTED_HEADERS,
+      "content-encoding": "gzip",
+      "content-length": String(gz.byteLength),
+    });
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+    const { bytes } = await readAll(res.body!);
+    expect(bytes).toEqual(gz);
+    expect(new TextDecoder().decode(await gunzip(bytes))).toBe(html);
+  });
+
+  it("streams a multi-piece gzip in seq order, byte for byte", async () => {
+    const original = noise(2 * HTML_BLOB_BYTES + 777);
+    const gz = await gzip(original);
+    const user = await login(app);
+    const post = await createPostWithGzipHtml(app, user, original);
+    const pieces = await env.DB.prepare("SELECT count(*) AS n FROM post_html_blobs WHERE post_id = ?").bind(post.id).first<{ n: number }>();
+    expect(pieces?.n).toBe(3);
+
+    const res = await fetchWorker(await buildHtmlUrl(ORIGIN, KEY, post.id, nowSec() + 3600));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Length")).toBe(String(gz.byteLength));
+    const { parts, bytes } = await readAll(res.body!);
+    expect(parts).toBeGreaterThanOrEqual(3);
+    expect(bytes.length).toBe(gz.byteLength);
+    expect(bytes.every((v, i) => v === gz[i])).toBe(true);
+    expect((await gunzip(bytes)).every((v, i) => v === original[i])).toBe(true);
+  });
+
+  it("a missing or out-of-order gzip piece → 500, never a truncated file", async () => {
+    const user = await login(app);
+    const a = await createPostWithGzipHtml(app, user, noise(HTML_BLOB_BYTES + 50));
+    await env.DB.prepare("DELETE FROM post_html_blobs WHERE post_id = ? AND seq = 0").bind(a.id).run();
+    expect((await fetchWorker(await buildHtmlUrl(ORIGIN, KEY, a.id, nowSec() + 3600))).status).toBe(500);
+
+    const b = await createPostWithGzipHtml(app, user, "<p>x</p>");
+    await env.DB.prepare("DELETE FROM post_html_blobs WHERE post_id = ?").bind(b.id).run();
+    expect((await fetchWorker(await buildHtmlUrl(ORIGIN, KEY, b.id, nowSec() + 3600))).status).toBe(500);
+  });
+
+  it("identity rows next to gzip rows are still served uncompressed", async () => {
+    const user = await login(app);
+    const html = "<p>그대로</p>";
+    const plain = await createPostWithHtml(app, user, html);
+    await createPostWithGzipHtml(app, user, "<p>압축</p>");
+    const res = await fetchWorker(await buildHtmlUrl(ORIGIN, KEY, plain.id, nowSec() + 3600));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Encoding")).toBeNull();
+    expect(Object.fromEntries(res.headers)).toEqual({ ...EXPECTED_HEADERS, "content-length": String(new TextEncoder().encode(html).length) });
+    expect(await res.text()).toBe(html);
   });
 });

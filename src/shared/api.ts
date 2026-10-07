@@ -50,9 +50,11 @@ export interface CategoryList {
 /** An attached HTML file's metadata (D-30). The content itself is only served by the isolated worker (TD-26). */
 export interface PostHtmlMeta {
   filename: string;
-  /** UTF-8 bytes */
+  /** Original (uncompressed) UTF-8 bytes */
   size: number;
   uploadedAt: number;
+  /** Stored gzip-compressed (a site upload since TD-25 gzip, migration 0005). */
+  compressed: boolean;
 }
 
 /** GET /api/posts/:id/html-url: a signed URL on the isolated HTML origin (TD-26). */

@@ -68,7 +68,10 @@ describe("migration 0004 (post_html_chunks)", () => {
       ["data", 0, 1],
     ]);
 
-    // The HTML worker serves the old row exactly as before.
+    // The HTML worker serves the old row exactly as before. The current worker
+    // also reads 0005's columns (deploys apply migrations first), so bring the
+    // schema up to date before serving.
+    await applyD1Migrations(db, env.TEST_MIGRATIONS);
     const url = await buildHtmlUrl("https://jungle5-html.test", env.HTML_SIGNING_KEY, ids.post, Math.floor(Date.now() / 1000) + 60);
     const served = await handleHtmlRequest(new Request(url), { DB: db, HTML_SIGNING_KEY: env.HTML_SIGNING_KEY });
     expect(served.status).toBe(200);

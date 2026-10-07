@@ -91,17 +91,23 @@ pnpm exec wrangler d1 execute jungle5-restore --remote --file=restore.sql
 
 **큰 HTML 행 (2026-10-07):** D1은 SQL 문장 하나를 100,000바이트까지만 받는다(`SQLITE_TOOBIG`). `build-d1-restore.py`가 긴 값을 `UPDATE … ||` 조각으로 나눠 모든 문장을 90,000바이트 이하로 만들므로 위 절차를 그대로 쓰면 된다. 순서 문제(자식 행이 부모 테이블보다 먼저 오는 것)도 같은 스크립트가 해결한다(TSD 9.3).
 
+**gzip BLOB (2026-10-07):** `post_html_blobs.data`(압축한 HTML 조각)는 덤프에 `X'<16진>'`으로 들어 있다. 스크립트가 `X''`로 넣은 뒤 `UPDATE … SET data = unhex(hex(data) || '<16진 조각>')`으로 이어 붙인다. 스크립트를 바꿨을 때와 분기 리허설 때는 먼저 로컬 왕복 확인을 돌린다. 임시 폴더만 쓰고 운영 DB와 `.wrangler/state`는 건드리지 않는다.
+
+```sh
+pnpm test:restore   # = python3 -I scripts/test-d1-restore.py, 성공하면 마지막에 OK 한 줄
+```
+
 ## 5. D1 크기 지켜보기 (TD-25)
 
-HTML 파일은 10MB까지 D1에 저장한다. 무료 플랜의 D1 DB 크기 상한은 500MB이고, 10MB 파일 50개면 찬다. 한 달에 한 번, 그리고 큰 파일이 많이 올라온 뒤에 크기를 본다.
+HTML 파일은 저장 크기 10MB까지 D1에 저장한다(사이트에서 올린 파일은 gzip으로 압축해 원본 50MB까지, Discord는 압축 없이 10MB까지). 무료 플랜의 D1 DB 크기 상한은 500MB이고, 저장 크기 10MB 파일 50개면 찬다. 한 달에 한 번, 그리고 큰 파일이 많이 올라온 뒤에 크기를 본다.
 
 ```sh
 pnpm exec wrangler d1 info jungle5-prod
 ```
 
-`database_size`를 본다(읽기 전용 명령). 어떤 글이 큰지는 `SELECT post_id, filename, size FROM post_html ORDER BY size DESC LIMIT 20`으로 본다.
+`database_size`를 본다(읽기 전용 명령). 어떤 글이 큰지는 `SELECT post_id, filename, size, encoding, stored_size FROM post_html ORDER BY coalesce(stored_size, size) DESC LIMIT 20`으로 본다 (`size`는 원본, `stored_size`는 실제로 차지하는 바이트).
 
 - **400MB를 넘으면:** 운영자에게 알리고 다음 중 하나를 정한다.
   - Workers 유료 플랜(월 $5, TSD TD-05)으로 바꾼다. D1 DB 상한이 10GB가 된다. 코드 변경은 없다.
-  - HTML만 R2로 옮긴다(R2 활성화에 결제 수단 등록 필요). `post_html_chunks`를 R2 객체로 바꾸는 설계·마이그레이션이 필요하다(새 TD).
+  - HTML만 R2로 옮긴다(R2 활성화에 결제 수단 등록 필요). `post_html_chunks`·`post_html_blobs`를 R2 객체로 바꾸는 설계·마이그레이션이 필요하다(새 TD).
 - **500MB에 닿으면** 쓰기가 실패한다(글·댓글 포함 사이트 전체). 그 전에 위 조치를 끝낸다.

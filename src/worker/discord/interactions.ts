@@ -61,7 +61,9 @@ export const MESSAGES = {
   notMember: "먼저 https://jungle5.xyz 에 로그인해 주세요",
   noHtml: "HTML 파일(.html, .htm)이 첨부된 메시지에서만 쓸 수 있어요",
   multipleHtml: "HTML 파일이 여러 개예요. 파일 하나만 첨부된 메시지에서 써 주세요",
-  tooLarge: `HTML 파일은 ${LIMITS.htmlMaxBytes / 1_000_000}MB 이하만 올릴 수 있어요`,
+  // Discord files are stored uncompressed (no server-side gzip: 10 ms CPU), so
+  // the bigger site limit (D-30) is only reachable from the editor.
+  tooLarge: `${LIMITS.htmlDiscordMaxBytes / 1_000_000}MB가 넘는 파일은 사이트 글쓰기에서 올려 주세요 (최대 ${LIMITS.htmlMaxOriginalBytes / 1_000_000}MB): https://jungle5.xyz/posts/new`,
   notUtf8: "UTF-8 텍스트로 된 HTML 파일만 올릴 수 있어요",
   wrongGuild: "정글5 Discord 서버에서만 쓸 수 있어요",
   unknown: "지원하지 않는 명령이에요",
@@ -143,7 +145,7 @@ export const interactionRoutes = new Hono<AppEnv>().post("/interactions", async 
   if (htmlFiles.length === 0) return c.json(ephemeral(MESSAGES.noHtml));
   if (htmlFiles.length > 1) return c.json(ephemeral(MESSAGES.multipleHtml));
   const attachment = htmlFiles[0]!;
-  if (attachment.size > LIMITS.htmlMaxBytes) return c.json(ephemeral(MESSAGES.tooLarge));
+  if (attachment.size > LIMITS.htmlDiscordMaxBytes) return c.json(ephemeral(MESSAGES.tooLarge));
 
   if (denial === "not_member" || !actor) return c.json(ephemeral(MESSAGES.notMember));
   if (existing) return c.json(ephemeral(`이미 올린 메시지예요: ${postUrl(c.env, existing.postId)}`));
@@ -183,13 +185,13 @@ async function uploadInBackground(db: Db, env: Env, client: DiscordAppClient, jo
   try {
     let bytes: Uint8Array;
     try {
-      bytes = await client.downloadAttachment(job.attachment.url, LIMITS.htmlMaxBytes);
+      bytes = await client.downloadAttachment(job.attachment.url, LIMITS.htmlDiscordMaxBytes);
     } catch (err) {
       if (err instanceof Error && "status" in err && err.status === 413) throw new Refusal(MESSAGES.tooLarge);
       throw err;
     }
     // Same checks and pieces as a site upload (TD-25).
-    const decoded = decodeHtmlBytes(bytes);
+    const decoded = decodeHtmlBytes(bytes, LIMITS.htmlDiscordMaxBytes);
     if (!decoded.ok) throw new Refusal(decoded.problem === "too_large" ? MESSAGES.tooLarge : MESSAGES.notUtf8);
     const name = htmlFilenameSchema.safeParse(job.attachment.filename);
     const filename = name.success ? name.data : "discord.html";
@@ -220,7 +222,7 @@ async function uploadInBackground(db: Db, env: Env, client: DiscordAppClient, jo
           createdAt: job.now,
           updatedAt: job.now,
         }),
-        ...writePostHtml(db, postId, { filename, pieces: decoded.pieces, size: decoded.size }, job.now, "discord", job.messageId),
+        ...writePostHtml(db, postId, { filename, encoding: "identity", pieces: decoded.pieces, size: decoded.size }, job.now, "discord", job.messageId),
       ]);
     } catch (err) {
       // Same message uploaded concurrently: the batch rolled back; point at the winner.

@@ -1,15 +1,42 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../../shared/constants";
-import { formatBytes, htmlTitle, readHtmlFile, suggestedTitle, titleFromFilename } from "./htmlFile";
+import { formatBytes, gzipBytes, HTML_MAX_LABEL, htmlTitle, readHtmlFile, suggestedTitle, titleFromFilename } from "./htmlFile";
+
+afterEach(() => vi.unstubAllGlobals());
 
 const file = (parts: BlobPart[], name = "note.html") => new File(parts, name, { type: "text/html" });
 
+async function gunzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
+  const stream = new DecompressionStream("gzip");
+  const writer = stream.writable.getWriter();
+  void writer.write(bytes).then(() => writer.close());
+  const reader = stream.readable.getReader();
+  const parts: number[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(...value);
+  }
+  return Uint8Array.from(parts);
+}
+
 describe("readHtmlFile (D-30)", () => {
-  it("reads a UTF-8 file and reports its byte size", async () => {
+  it("reads a UTF-8 file, reports its byte size and gzips it for the upload", async () => {
     const r = await readHtmlFile(file(["<p>한글</p>"]));
     expect(r).toMatchObject({ ok: true, file: { filename: "note.html", html: "<p>한글</p>", size: 13 } });
-    // The original bytes are kept for the raw upload.
-    expect(r.ok && new TextDecoder().decode(new Uint8Array(r.file.bytes))).toBe("<p>한글</p>");
+    if (!r.ok) throw new Error("not ok");
+    // The body is a gzip of the original bytes (magic 1f 8b 08), and its size is reported.
+    expect(Array.from(r.file.body.subarray(0, 3))).toEqual([0x1f, 0x8b, 0x08]);
+    expect(r.file.compressedSize).toBe(r.file.body.byteLength);
+    expect(new TextDecoder().decode(await gunzip(r.file.body))).toBe("<p>한글</p>");
+  });
+
+  it("gzipBytes: single member whose trailer is the original size", async () => {
+    const original = new TextEncoder().encode("<p>정글</p>".repeat(10_000));
+    const gz = await gzipBytes(original);
+    expect(gz.byteLength).toBeLessThan(original.byteLength / 10);
+    expect(new DataView(gz.buffer).getUint32(gz.byteLength - 4, true)).toBe(original.byteLength);
+    expect(new TextDecoder().decode(await gunzip(gz))).toBe(new TextDecoder().decode(original));
   });
 
   it("rejects a file that is not valid UTF-8 (fatal decoding)", async () => {
@@ -19,13 +46,52 @@ describe("readHtmlFile (D-30)", () => {
     expect(!r.ok && r.error).toMatch(/UTF-8로 저장된 HTML 파일만/);
   });
 
-  it("rejects files over the size limit before reading, showing the size", async () => {
-    expect(LIMITS.htmlMaxBytes).toBe(10_000_000);
-    const big = file([new Uint8Array(12_345_678)]);
-    expect(await readHtmlFile(big)).toEqual({ ok: false, error: "파일이 너무 큽니다 (12.3MB). 10MB 이하만 올릴 수 있습니다." });
-    expect((await readHtmlFile(file([new Uint8Array(LIMITS.htmlMaxBytes + 1)]))).ok).toBe(false);
-    const ok = await readHtmlFile(file(["a".repeat(LIMITS.htmlMaxBytes)]));
+  it("limits: 50 MB original (checked before reading), 10 MB compressed", async () => {
+    expect(LIMITS.htmlMaxOriginalBytes).toBe(50_000_000);
+    expect(LIMITS.htmlMaxStoredBytes).toBe(10_000_000);
+    expect(HTML_MAX_LABEL).toBe("원본 50MB, 압축 후 10MB 이하");
+    const big = file([new Uint8Array(61_234_567)]);
+    expect(await readHtmlFile(big)).toEqual({
+      ok: false,
+      error: "파일이 너무 큽니다 (61.2MB). 원본 50MB, 압축 후 10MB 이하만 올릴 수 있습니다.",
+    });
+    expect((await readHtmlFile(file([new Uint8Array(LIMITS.htmlMaxOriginalBytes + 1)]))).ok).toBe(false);
+    // 12 MB of text compresses far below 10 MB: accepted.
+    const ok = await readHtmlFile(file(["a".repeat(12_000_000)]));
     expect(ok.ok).toBe(true);
+    expect(ok.ok && ok.file.size).toBe(12_000_000);
+    expect(ok.ok && ok.file.compressedSize).toBeLessThan(1_000_000);
+  });
+
+  it("a file that is still over 10 MB after compression → both sizes in the message", async () => {
+    const compressed = new Uint8Array(LIMITS.htmlMaxStoredBytes + 1_234_567);
+    class FakeCompressionStream {
+      readonly writable: WritableStream<Uint8Array>;
+      readonly readable: ReadableStream<Uint8Array>;
+      constructor() {
+        const t = new TransformStream<Uint8Array, Uint8Array>({ transform: () => undefined, flush: (c) => c.enqueue(compressed) });
+        this.writable = t.writable;
+        this.readable = t.readable;
+      }
+    }
+    vi.stubGlobal("CompressionStream", FakeCompressionStream);
+    const r = await readHtmlFile(file(["<p>x</p>".repeat(5_000_000)]));
+    expect(r).toEqual({
+      ok: false,
+      error: "압축해도 너무 큽니다 (원본 40MB → 압축 11.2MB). 원본 50MB, 압축 후 10MB 이하만 올릴 수 있습니다.",
+    });
+  });
+
+  it("without CompressionStream: the raw file up to 10 MB, a clear message above", async () => {
+    vi.stubGlobal("CompressionStream", undefined);
+    const small = await readHtmlFile(file(["<p>한글</p>"]));
+    expect(small).toMatchObject({ ok: true, file: { size: 13, compressedSize: null } });
+    expect(small.ok && new TextDecoder().decode(small.file.body)).toBe("<p>한글</p>");
+    expect((await readHtmlFile(file(["a".repeat(LIMITS.htmlMaxStoredBytes)]))).ok).toBe(true);
+    expect(await readHtmlFile(file(["a".repeat(LIMITS.htmlMaxStoredBytes + 1)]))).toEqual({
+      ok: false,
+      error: "이 브라우저에서는 10MB가 넘는 파일을 올릴 수 없습니다 (10MB). 최신 브라우저에서 다시 올려 주세요.",
+    });
   });
 
   it("rejects other extensions, empty files and NUL bytes", async () => {

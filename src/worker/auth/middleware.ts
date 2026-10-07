@@ -25,8 +25,8 @@ const RAW_HTML_UPLOAD = /^\/api\/posts\/[^/]+\/html$/;
 
 /**
  * 6.2 step 4: mutating requests need Origin === APP_ORIGIN and a JSON body
- * type; the raw HTML upload needs `text/html` instead. Neither is a
- * CORS-safelisted type, so a cross-site page can only send them after a
+ * type; the HTML upload needs `text/html` or `application/gzip` instead. None
+ * is a CORS-safelisted type, so a cross-site page can only send them after a
  * preflight, which this API never answers with CORS headers.
  */
 export const csrfGuard = createMiddleware<AppEnv>(async (c, next) => {
@@ -35,7 +35,9 @@ export const csrfGuard = createMiddleware<AppEnv>(async (c, next) => {
     const contentType = c.req.header("Content-Type") ?? "";
     if (origin !== c.env.APP_ORIGIN) throw forbidden("허용되지 않은 출처의 요청입니다");
     if (c.req.method === "PUT" && RAW_HTML_UPLOAD.test(c.req.path)) {
-      if (!/^text\/html(\s*;|$)/i.test(contentType)) throw forbidden("Content-Type: text/html 이 필요합니다");
+      if (!/^(text\/html|application\/gzip)(\s*;|$)/i.test(contentType)) {
+        throw forbidden("Content-Type: text/html 또는 application/gzip 이 필요합니다");
+      }
     } else if (!/^application\/json(\s*;|$)/i.test(contentType)) {
       throw forbidden("Content-Type: application/json 이 필요합니다");
     }

@@ -4,6 +4,7 @@
 // PRD "회차(Session)" is called `round` in code (TSD 5).
 import { sql } from "drizzle-orm";
 import {
+  blob,
   check,
   index,
   integer,
@@ -245,8 +246,19 @@ export const postHtml = sqliteTable(
     discordMessageId: text("discord_message_id").unique(),
     /** Number of extra pieces in `post_html_chunks` (seq 1..n) after `html`, the first piece (TD-25, migration 0004). */
     chunkCount: integer("chunk_count").notNull().default(0),
+    /**
+     * How the file is stored (TD-25, migration 0005). `identity`: UTF-8 text in
+     * `html` + `post_html_chunks`. `gzip`: gzip bytes in `post_html_blobs`, with
+     * `html` = '' and `chunk_count` = 0; `size` is still the original size.
+     */
+    encoding: text("encoding", { enum: ["identity", "gzip"] }).notNull().default("identity"),
+    /** Bytes actually stored: the gzip size for `gzip`, `size` for `identity`. Nullable only because ADD COLUMN; 0005 backfills it and every write sets it. */
+    storedSize: integer("stored_size"),
   },
-  (t) => [check("post_html_uploaded_via_chk", sql`${t.uploadedVia} IN ('site', 'discord')`)],
+  (t) => [
+    check("post_html_uploaded_via_chk", sql`${t.uploadedVia} IN ('site', 'discord')`),
+    check("post_html_encoding_chk", sql`${t.encoding} IN ('identity', 'gzip')`),
+  ],
 );
 
 /**
@@ -265,6 +277,24 @@ export const postHtmlChunks = sqliteTable(
     data: text("data").notNull(),
   },
   (t) => [primaryKey({ columns: [t.postId, t.seq] }), check("post_html_chunks_seq_chk", sql`${t.seq} >= 1`)],
+);
+
+/**
+ * The gzip bytes of a `post_html` row with `encoding = 'gzip'` (TD-25,
+ * migration 0005), in pieces seq 0..n of at most 950,000 bytes so each
+ * piece's hex form (how it is written and read, 3.2) stays under the D1 value
+ * cap. Written and deleted only together with its `post_html` row (one batch).
+ */
+export const postHtmlBlobs = sqliteTable(
+  "post_html_blobs",
+  {
+    postId: text("post_id")
+      .notNull()
+      .references(() => posts.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    data: blob("data", { mode: "buffer" }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.postId, t.seq] }), check("post_html_blobs_seq_chk", sql`${t.seq} >= 0`)],
 );
 
 export type MemberRow = typeof members.$inferSelect;

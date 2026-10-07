@@ -124,6 +124,49 @@ export function putHtml(
   });
 }
 
+/** gzip bytes of `data`, as the SPA makes them (CompressionStream). */
+export async function gzip(data: string | Uint8Array): Promise<Uint8Array> {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** gunzip, for checking what a browser would see. */
+export async function gunzip(data: Uint8Array | ArrayBuffer): Promise<Uint8Array> {
+  const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** PUT /api/posts/:id/html with a gzip body, as the SPA sends it (TD-25). */
+export function putGzipHtml(
+  app: App,
+  cookie: string | undefined,
+  postId: string,
+  body: Uint8Array | ReadableStream<Uint8Array>,
+  originalSize: number | string | null,
+  filename = "page.html",
+  opts: Omit<CallOptions, "cookie" | "rawBody"> = {},
+) {
+  const headers: Record<string, string> = { "X-Filename": encodeURIComponent(filename) };
+  if (originalSize !== null) headers["X-Original-Size"] = String(originalSize);
+  return call(app, "PUT", `/api/posts/${postId}/html`, {
+    cookie,
+    contentType: "application/gzip",
+    rawBody: body,
+    ...opts,
+    headers: { ...headers, ...opts.headers },
+  });
+}
+
+/** A post with a gzip-stored HTML file (create, then gzip PUT). */
+export async function createPostWithGzipHtml(app: App, user: TestUser, html: string | Uint8Array, filename = "page.html") {
+  const original = typeof html === "string" ? new TextEncoder().encode(html) : html;
+  const post = await createPost(app, user);
+  const res = await putGzipHtml(app, user.cookie, post.id, await gzip(original), original.byteLength, filename);
+  if (res.status !== 200) throw new Error(`put gzip html failed: ${res.status} ${res.text}`);
+  return res.json as { id: string; [k: string]: unknown };
+}
+
 /** A post with an attached HTML file (create, then raw PUT). */
 export async function createPostWithHtml(
   app: App,

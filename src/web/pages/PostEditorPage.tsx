@@ -28,7 +28,7 @@ export interface PostFormValues {
   roundId: string;
   /**
    * Name of the HTML file chosen when the draft was saved. The file itself is
-   * never put in localStorage (up to 10MB), so a restored draft asks for it again.
+   * never put in localStorage (up to 50MB), so a restored draft asks for it again.
    */
   htmlFilename: string;
 }
@@ -234,7 +234,7 @@ export function PostForm({
       }
       // TD-25: the file is its own raw request, sent only after the text is saved.
       try {
-        if (htmlFile) detail = await api.putPostHtml(postId, { filename: htmlFile.filename, bytes: htmlFile.bytes });
+        if (htmlFile) detail = await api.putPostHtml(postId, htmlFile);
         else if (removeHtml && original?.html) {
           await api.deletePostHtml(postId);
           detail = { ...detail, html: null };
@@ -483,7 +483,7 @@ function HtmlField({
   return (
     <section aria-labelledby={`${id}-label`} className="flex flex-col gap-2">
       <h2 id={`${id}-label`} className="text-base font-bold text-text">
-        HTML 파일 <span className="text-sm font-normal text-muted">(선택, {HTML_MAX_LABEL} 이하 · UTF-8)</span>
+        HTML 파일 <span className="text-sm font-normal text-muted">(선택, {HTML_MAX_LABEL} · UTF-8)</span>
       </h2>
       <input
         ref={inputRef}
@@ -506,6 +506,7 @@ function HtmlField({
           </span>
           <span className="text-xs text-muted">
             {formatBytes(attached.size)}
+            {file?.compressedSize != null ? ` (압축 ${formatBytes(file.compressedSize)})` : ""}
             {file && existing === null && !removed ? " · 저장하면 올라갑니다" : file ? " · 저장하면 바뀝니다" : ""}
           </span>
           <button type="button" className={btn.ghost} onClick={choose} disabled={reading}>
@@ -534,7 +535,7 @@ function HtmlField({
         >
           <p className="text-muted">HTML 파일을 여기에 끌어다 놓거나</p>
           <button type="button" className={btn.secondary} onClick={choose} disabled={reading}>
-            {reading ? "읽는 중…" : "파일 선택"}
+            {reading ? "읽고 압축하는 중…" : "파일 선택"}
           </button>
           <p className="text-xs text-muted">글 화면 위쪽에 그대로 보입니다. 스크립트도 실행되지만 사이트와 분리된 곳에서 열립니다.</p>
         </div>

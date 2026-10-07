@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:restore": "python3 -I scripts/test-d1-restore.py",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply jungle5-prod --local",
     "db:migrate:remote": "wrangler d1 migrations apply jungle5-prod --remote",

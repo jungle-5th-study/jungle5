@@ -2,7 +2,7 @@
 // UTF-8 character boundaries, and decoding the pieces gives back the file.
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../../src/shared/constants";
-import { decodeHtmlBytes, HTML_CHUNK_BYTES, splitUtf8 } from "../../src/worker/lib/postHtml";
+import { checkGzipBytes, decodeHtmlBytes, HTML_BLOB_BYTES, HTML_CHUNK_BYTES, splitBytes, splitUtf8 } from "../../src/worker/lib/postHtml";
 
 const enc = new TextEncoder();
 const C = HTML_CHUNK_BYTES;
@@ -67,7 +67,7 @@ describe("splitUtf8", () => {
 
   it("dense multi-byte text up to 10,000,000 bytes: every piece starts on a character and decodes", () => {
     const unit = enc.encode("가😀나a"); // 11 bytes: cuts at multiples of 1.9 MB fall inside characters
-    const n = Math.floor(LIMITS.htmlMaxBytes / unit.length) * unit.length;
+    const n = Math.floor(LIMITS.htmlMaxStoredBytes / unit.length) * unit.length;
     const bytes = new Uint8Array(n);
     for (let i = 0; i < n; i += unit.length) bytes.set(unit, i);
     const pieces = splitUtf8(bytes);
@@ -106,7 +106,7 @@ describe("decodeHtmlBytes", () => {
 
   it("refuses empty, oversize, NUL and non-UTF-8 input", () => {
     expect(decodeHtmlBytes(new Uint8Array(0))).toEqual({ ok: false, problem: "empty" });
-    expect(decodeHtmlBytes(new Uint8Array(LIMITS.htmlMaxBytes + 1).fill(0x61))).toEqual({ ok: false, problem: "too_large" });
+    expect(decodeHtmlBytes(new Uint8Array(LIMITS.htmlMaxStoredBytes + 1).fill(0x61))).toEqual({ ok: false, problem: "too_large" });
     expect(decodeHtmlBytes(enc.encode("<p>a\u0000b</p>"))).toEqual({ ok: false, problem: "not_text" });
     // NUL far into a later piece.
     const late = new Uint8Array(C + 100).fill(0x61);
@@ -115,6 +115,46 @@ describe("decodeHtmlBytes", () => {
     expect(decodeHtmlBytes(new Uint8Array([0xc7, 0xd1, 0xb1, 0xdb]))).toEqual({ ok: false, problem: "not_text" });
     // A truncated character at the very end.
     expect(decodeHtmlBytes(enc.encode("한").subarray(0, 2))).toEqual({ ok: false, problem: "not_text" });
-    expect(decodeHtmlBytes(new Uint8Array(LIMITS.htmlMaxBytes).fill(0x61))).toMatchObject({ ok: true, size: LIMITS.htmlMaxBytes });
+    expect(decodeHtmlBytes(new Uint8Array(LIMITS.htmlMaxStoredBytes).fill(0x61))).toMatchObject({ ok: true, size: LIMITS.htmlMaxStoredBytes });
+  });
+});
+
+describe("checkGzipBytes / splitBytes (TD-25, migration 0005)", () => {
+  const gzipOf = async (text: string) =>
+    new Uint8Array(await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+
+  it("accepts a CompressionStream gzip whose trailer matches the declared original size", async () => {
+    const text = "<p>정글 😀</p>".repeat(1000);
+    const gz = await gzipOf(text);
+    const n = new TextEncoder().encode(text).byteLength;
+    expect(checkGzipBytes(gz, n)).toBeNull();
+    expect(checkGzipBytes(gz, n + 1)).toBe("size_mismatch");
+    expect(checkGzipBytes(gz, n + 2 ** 32)).toBeNull(); // ISIZE is mod 2^32 (sizes this large are refused earlier)
+  });
+
+  it("refuses empty, oversize and non-gzip bodies", async () => {
+    const gz = await gzipOf("<p>x</p>");
+    expect(checkGzipBytes(new Uint8Array(0), 1)).toBe("empty");
+    expect(checkGzipBytes(new Uint8Array(LIMITS.htmlMaxStoredBytes + 1), 1)).toBe("too_large");
+    expect(checkGzipBytes(gz.subarray(0, 19), 8)).toBe("not_gzip");
+    for (const [i, v] of [
+      [0, 0x1e],
+      [1, 0x8c],
+      [2, 0x07],
+      [3, 0x80],
+    ] as const) {
+      const bad = gz.slice();
+      bad[i] = v;
+      expect(checkGzipBytes(bad, 8), `byte ${i}`).toBe("not_gzip");
+    }
+  });
+
+  it("splitBytes cuts at exactly HTML_BLOB_BYTES without copying", () => {
+    const bytes = new Uint8Array(2 * HTML_BLOB_BYTES + 1);
+    const pieces = splitBytes(bytes);
+    expect(pieces.map((p) => p.byteLength)).toEqual([HTML_BLOB_BYTES, HTML_BLOB_BYTES, 1]);
+    expect(pieces.every((p) => p.buffer === bytes.buffer)).toBe(true);
+    expect(splitBytes(new Uint8Array(HTML_BLOB_BYTES)).map((p) => p.byteLength)).toEqual([HTML_BLOB_BYTES]);
+    expect(HTML_BLOB_BYTES * 2).toBeLessThan(2_000_000);
   });
 });

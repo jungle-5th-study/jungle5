@@ -92,15 +92,26 @@ export const api = {
 
   // ---- attached HTML (D-30, TD-25, TD-26) ----
   postHtmlUrl: (id: string) => request<PostHtmlUrl>(`/api/posts/${enc(id)}/html-url`),
-  /** The raw file (TD-25): no JSON wrapping; the name goes percent-encoded in X-Filename. */
-  putPostHtml: (id: string, file: { filename: string; bytes: BodyInit }) =>
+  /**
+   * The file itself (TD-25), no JSON wrapping; the name goes percent-encoded in
+   * X-Filename. Gzip (`compressedSize` set) adds X-Original-Size; otherwise the
+   * raw text/html upload.
+   */
+  putPostHtml: (id: string, file: { filename: string; body: BodyInit; size: number; compressedSize: number | null }) =>
     request<PostDetail>(`/api/posts/${enc(id)}/html`, {
       method: "PUT",
-      raw: {
-        body: file.bytes,
-        contentType: "text/html; charset=utf-8",
-        headers: { "X-Filename": encodeURIComponent(file.filename) },
-      },
+      raw:
+        file.compressedSize === null
+          ? {
+              body: file.body,
+              contentType: "text/html; charset=utf-8",
+              headers: { "X-Filename": encodeURIComponent(file.filename) },
+            }
+          : {
+              body: file.body,
+              contentType: "application/gzip",
+              headers: { "X-Filename": encodeURIComponent(file.filename), "X-Original-Size": String(file.size) },
+            },
     }),
   deletePostHtml: (id: string) => request<void>(`/api/posts/${enc(id)}/html`, { method: "DELETE" }),
 

@@ -1,19 +1,33 @@
 // Storing a post's attached HTML (D-30, TD-25). Used by the posts routes and
 // the Discord message command (D-32).
 //
-// One D1 value holds at most 2,000,000 bytes, so a file of up to 10,000,000
-// bytes is cut into pieces of at most HTML_CHUNK_BYTES, each at a UTF-8
-// character boundary and stored as TEXT: piece 0 in post_html.html, pieces
-// 1..n in post_html_chunks (migration 0004). Every write replaces the whole set
-// in one batch, so readers never see a mix of two uploads.
+// Two representations (post_html.encoding, migration 0005):
+// - identity: UTF-8 text. One D1 value holds at most 2,000,000 bytes, so a
+//   file of up to 10,000,000 bytes is cut into pieces of at most
+//   HTML_CHUNK_BYTES, each at a UTF-8 character boundary and stored as TEXT:
+//   piece 0 in post_html.html, pieces 1..n in post_html_chunks (0004).
+// - gzip: the gzip bytes from the browser (site uploads up to 50 MB original,
+//   10 MB compressed), never decompressed here (10 ms CPU budget), in
+//   post_html_blobs pieces of at most HTML_BLOB_BYTES (seq 0..n);
+//   post_html.html = '' and chunk_count = 0.
+// Every write replaces the whole set (both representations) in one batch, so
+// readers never see a mix of two uploads.
 import { eq, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { LIMITS } from "../../shared/constants";
-import { postHtml, postHtmlChunks } from "../db/schema";
+import { postHtml, postHtmlBlobs, postHtmlChunks } from "../db/schema";
 import type { Db } from "../types";
+import { bytesToHex } from "./hex";
 
 /** Largest piece, in UTF-8 bytes: under the 2,000,000-byte D1 value cap with room for post_html's other columns. */
 export const HTML_CHUNK_BYTES = 1_900_000;
+
+/**
+ * Largest gzip piece, in bytes. Pieces travel as hex (`unhex(?)` on write,
+ * `hex(data)` on read, `unhex(hex(data) || …)` in a restore), so the hex form
+ * (2 × 950,000 = 1,900,000) must also stay under the 2,000,000-byte value cap.
+ */
+export const HTML_BLOB_BYTES = 950_000;
 
 /**
  * Splits UTF-8 bytes into views of at most `maxBytes`, never inside a
@@ -34,27 +48,38 @@ export function splitUtf8(bytes: Uint8Array, maxBytes: number = HTML_CHUNK_BYTES
   return pieces;
 }
 
-/** A checked file, ready to store: `pieces` are the decoded pieces in order. */
-export interface HtmlFile {
-  filename: string;
-  pieces: string[];
-  /** Total UTF-8 bytes. */
-  size: number;
-}
+/** A checked file, ready to store. */
+export type HtmlFile =
+  | {
+      filename: string;
+      encoding: "identity";
+      /** The decoded pieces in order. */
+      pieces: string[];
+      /** Total UTF-8 bytes. */
+      size: number;
+    }
+  | {
+      filename: string;
+      encoding: "gzip";
+      /** The gzip bytes as uploaded (checked by checkGzipBytes). */
+      gzip: Uint8Array;
+      /** Original (uncompressed) bytes, as declared by the uploader. */
+      size: number;
+    };
 
 export type HtmlBytesProblem = "empty" | "too_large" | "not_text";
 export type HtmlBytesResult = { ok: true; pieces: string[]; size: number } | { ok: false; problem: HtmlBytesProblem };
 
 /**
- * Checks raw file bytes (≤ 10,000,000, strict UTF-8, no U+0000) and decodes
+ * Checks raw file bytes (≤ maxBytes, strict UTF-8, no U+0000) and decodes
  * them piece by piece. Decoding each piece with `fatal` validates the whole
  * file, because pieces end at character boundaries. `ignoreBOM` keeps a
  * leading BOM (and any U+FEFF at a cut), so the stored text re-encodes to
  * exactly the uploaded bytes and `size` matches what the HTML worker sends.
  */
-export function decodeHtmlBytes(bytes: Uint8Array): HtmlBytesResult {
+export function decodeHtmlBytes(bytes: Uint8Array, maxBytes: number = LIMITS.htmlMaxStoredBytes): HtmlBytesResult {
   if (bytes.byteLength === 0) return { ok: false, problem: "empty" };
-  if (bytes.byteLength > LIMITS.htmlMaxBytes) return { ok: false, problem: "too_large" };
+  if (bytes.byteLength > maxBytes) return { ok: false, problem: "too_large" };
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   const pieces: string[] = [];
   for (const piece of splitUtf8(bytes)) {
@@ -70,6 +95,40 @@ export function decodeHtmlBytes(bytes: Uint8Array): HtmlBytesResult {
     pieces.push(text);
   }
   return { ok: true, pieces, size: bytes.byteLength };
+}
+
+export type GzipProblem = "empty" | "too_large" | "not_gzip" | "size_mismatch";
+
+/** Smallest possible gzip member: 10-byte header, 2-byte empty deflate block, 8-byte trailer. */
+const GZIP_MIN_BYTES = 20;
+
+/**
+ * Cheap structural checks on an uploaded gzip body, without decompressing it
+ * (TSD 3.2: no server-side decompression, 10 ms CPU budget):
+ * - at most LIMITS.htmlMaxStoredBytes;
+ * - header magic 1f 8b, method 08 (deflate), no reserved flag bits;
+ * - the trailer's ISIZE (original length mod 2^32, little endian) equals the
+ *   declared original size. That is exact for the single-member gzip that
+ *   CompressionStream produces, since the size limit is far below 2^32.
+ * The content itself (UTF-8, no U+0000) is checked by the SPA only; a forged
+ * body can at worst show garbage in the sandboxed viewer.
+ */
+export function checkGzipBytes(bytes: Uint8Array, originalSize: number): GzipProblem | null {
+  if (bytes.byteLength === 0) return "empty";
+  if (bytes.byteLength > LIMITS.htmlMaxStoredBytes) return "too_large";
+  if (bytes.byteLength < GZIP_MIN_BYTES || bytes[0] !== 0x1f || bytes[1] !== 0x8b || bytes[2] !== 0x08 || (bytes[3]! & 0xe0) !== 0) {
+    return "not_gzip";
+  }
+  const n = bytes.byteLength;
+  const isize = (bytes[n - 4]! | (bytes[n - 3]! << 8) | (bytes[n - 2]! << 16) | (bytes[n - 1]! << 24)) >>> 0;
+  return isize === originalSize % 2 ** 32 ? null : "size_mismatch";
+}
+
+/** Pieces of at most `maxBytes` (views, no copy). */
+export function splitBytes(bytes: Uint8Array, maxBytes: number = HTML_BLOB_BYTES): Uint8Array[] {
+  const pieces: Uint8Array[] = [];
+  for (let start = 0; start < bytes.byteLength; start += maxBytes) pieces.push(bytes.subarray(start, start + maxBytes));
+  return pieces;
 }
 
 /**
@@ -106,10 +165,10 @@ type Statements = [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]];
 
 /**
  * Statements (for one batch) that store `file` as the post's HTML, replacing
- * any earlier file and all of its pieces. A replacement keeps
- * `discord_message_id`, so running the Discord command on the same message
- * again still points at this post. The batch must also contain (or follow) the
- * posts row, since pieces reference posts(id).
+ * any earlier file and all of its pieces in either representation. A
+ * replacement keeps `discord_message_id`, so running the Discord command on the
+ * same message again still points at this post. The batch must also contain
+ * (or follow) the posts row, since pieces reference posts(id).
  */
 export function writePostHtml(
   db: Db,
@@ -119,7 +178,10 @@ export function writePostHtml(
   via: "site" | "discord",
   discordMessageId: string | null = null,
 ): Statements {
-  const [first = "", ...rest] = file.pieces;
+  const identity = file.encoding === "identity" ? file.pieces : [];
+  const [first = "", ...rest] = identity;
+  const blobs = file.encoding === "gzip" ? splitBytes(file.gzip) : [];
+  const storedSize = file.encoding === "gzip" ? file.gzip.byteLength : file.size;
   return [
     db
       .insert(postHtml)
@@ -132,6 +194,8 @@ export function writePostHtml(
         uploadedVia: via,
         discordMessageId,
         chunkCount: rest.length,
+        encoding: file.encoding,
+        storedSize,
       })
       .onConflictDoUpdate({
         target: postHtml.postId,
@@ -142,11 +206,16 @@ export function writePostHtml(
           uploadedAt: sql`excluded.uploaded_at`,
           uploadedVia: sql`excluded.uploaded_via`,
           chunkCount: sql`excluded.chunk_count`,
+          encoding: sql`excluded.encoding`,
+          storedSize: sql`excluded.stored_size`,
         },
       }),
     db.delete(postHtmlChunks).where(eq(postHtmlChunks.postId, postId)),
+    db.delete(postHtmlBlobs).where(eq(postHtmlBlobs.postId, postId)),
     // One statement per piece: each bound value stays under the D1 value cap.
     ...rest.map((data, i) => db.insert(postHtmlChunks).values({ postId, seq: i + 1, data })),
+    // Bound as hex text: a bound Uint8Array would travel as a JSON array of numbers.
+    ...blobs.map((piece, seq) => db.insert(postHtmlBlobs).values({ postId, seq, data: sql`unhex(${bytesToHex(piece)})` })),
   ];
 }
 
@@ -154,6 +223,7 @@ export function writePostHtml(
 export function deletePostHtml(db: Db, postId: string): Statements {
   return [
     db.delete(postHtmlChunks).where(eq(postHtmlChunks.postId, postId)),
+    db.delete(postHtmlBlobs).where(eq(postHtmlBlobs.postId, postId)),
     db.delete(postHtml).where(eq(postHtml.postId, postId)),
   ];
 }

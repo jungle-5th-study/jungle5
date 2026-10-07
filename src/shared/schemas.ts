@@ -51,13 +51,18 @@ export function hasHtmlExtension(name: string): boolean {
   return HTML_EXTENSIONS.some((ext) => lower.endsWith(ext) && lower.length > ext.length);
 }
 
-/** "파일은 10MB 이하만 올릴 수 있습니다" (D-30). */
-export const HTML_TOO_LARGE_MESSAGE = `파일은 ${LIMITS.htmlMaxBytes / 1_000_000}MB 이하만 올릴 수 있습니다`;
+/** "파일은 10MB 이하만 올릴 수 있습니다": an uncompressed (text/html) upload (D-30). */
+export const HTML_TOO_LARGE_MESSAGE = `파일은 ${LIMITS.htmlMaxStoredBytes / 1_000_000}MB 이하만 올릴 수 있습니다`;
+
+/** "원본 50MB, 압축 후 10MB 이하" (D-30): the site's limits for a gzip upload. */
+export const HTML_LIMITS_LABEL = `원본 ${LIMITS.htmlMaxOriginalBytes / 1_000_000}MB, 압축 후 ${LIMITS.htmlMaxStoredBytes / 1_000_000}MB 이하`;
+
+/** "원본 50MB, 압축 후 10MB 이하만 올릴 수 있습니다": a gzip upload over either limit. */
+export const HTML_GZIP_TOO_LARGE_MESSAGE = `${HTML_LIMITS_LABEL}만 올릴 수 있습니다`;
 
 /**
  * Name of an attached HTML file. The file itself is not JSON: PUT
- * /api/posts/:id/html takes the raw bytes (TD-25, TSD 3.2), and the server
- * checks them as strict UTF-8 without U+0000.
+ * /api/posts/:id/html takes the gzip or raw bytes (TD-25, TSD 3.2).
  */
 export const htmlFilenameSchema = z
   .string()

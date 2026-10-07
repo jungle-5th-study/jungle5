@@ -2,7 +2,9 @@
 // User HTML runs scripts, so it is never served from jungle5.xyz. This worker
 // lives on workers.dev (a public suffix → a different site), answers only
 // GET /v/:postId?exp=&sig= with a signature made by the main worker, and never
-// sets cookies. It reads the same D1 database (post_html, post_html_chunks) read-only.
+// sets cookies. It reads the same D1 database (post_html, post_html_chunks,
+// post_html_blobs) read-only.
+import { hexToBytes } from "../worker/lib/hex";
 import { verifyHtmlSignature } from "../worker/lib/htmlSigning";
 
 export interface HtmlEnv {
@@ -57,21 +59,61 @@ export async function handleHtmlRequest(request: Request, env: HtmlEnv, nowMs: n
   }
   if (exp * 1000 <= nowMs) return errorPage(410, "링크가 만료됐습니다. 정글5에서 다시 열어 주세요");
 
-  // TD-25: piece 0 is post_html.html, pieces 1..n are post_html_chunks. One
-  // batch is one D1 transaction, so both reads see the same upload.
-  const [head, rest] = await env.DB.batch([
-    env.DB.prepare("SELECT html, size, chunk_count FROM post_html WHERE post_id = ?").bind(postId),
+  // TD-25: identity files are post_html.html (piece 0) + post_html_chunks;
+  // gzip files are post_html_blobs, read as hex (a BLOB result would arrive as
+  // an Array of numbers). One batch is one D1 transaction, so all reads see
+  // the same upload; only one of the two piece queries returns rows.
+  const [head, rest, blobs] = await env.DB.batch([
+    env.DB.prepare("SELECT html, size, chunk_count, encoding, stored_size FROM post_html WHERE post_id = ?").bind(postId),
     env.DB.prepare("SELECT data FROM post_html_chunks WHERE post_id = ? ORDER BY seq").bind(postId),
+    env.DB.prepare("SELECT seq, hex(data) AS hex FROM post_html_blobs WHERE post_id = ? ORDER BY seq").bind(postId),
   ]);
-  const row = (head?.results as { html: string; size: number; chunk_count: number }[] | undefined)?.[0];
+  const row = (head?.results as HtmlRow[] | undefined)?.[0];
   if (!row) return errorPage(404, "찾을 수 없습니다");
+
+  if (row.encoding === "gzip") {
+    const pieces = (blobs?.results ?? []) as { seq: number; hex: string }[];
+    if (pieces.length === 0 || pieces.some((p, i) => p.seq !== i) || row.stored_size === null) {
+      throw new Error(`post_html ${postId}: gzip pieces ${pieces.map((p) => p.seq).join(",")} (stored_size ${row.stored_size})`);
+    }
+    // The stored gzip bytes go out as they are. `encodeBody: "manual"` tells
+    // the runtime the body is already encoded per Content-Encoding, so it is
+    // not compressed again; the browser decompresses it.
+    return new Response(streamHexPieces(pieces.map((p) => p.hex), row.stored_size), {
+      status: 200,
+      headers: { ...HTML_HEADERS, "Content-Encoding": "gzip", "Content-Length": String(row.stored_size) },
+      encodeBody: "manual",
+    });
+  }
+
   const chunks = (rest?.results ?? []) as { data: string }[];
   if (chunks.length !== row.chunk_count) throw new Error(`post_html ${postId}: ${chunks.length} of ${row.chunk_count} chunks`);
-
   return new Response(streamPieces([row.html, ...chunks.map((c) => c.data)], row.size), {
     status: 200,
     headers: { ...HTML_HEADERS, "Content-Length": String(row.size) },
   });
+}
+
+interface HtmlRow {
+  html: string;
+  size: number;
+  chunk_count: number;
+  encoding: "identity" | "gzip";
+  stored_size: number | null;
+}
+
+/** Like streamPieces, for gzip pieces read as hex: each is decoded only when pulled. */
+function streamHexPieces(pieces: (string | undefined)[], size: number): ReadableStream<Uint8Array> {
+  let i = 0;
+  const source = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const piece = pieces[i];
+      pieces[i++] = undefined;
+      if (piece !== undefined) controller.enqueue(hexToBytes(piece));
+      if (i >= pieces.length) controller.close();
+    },
+  });
+  return source.pipeThrough(new FixedLengthStream(size));
 }
 
 /**

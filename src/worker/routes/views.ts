@@ -92,11 +92,22 @@ const htmlColumns = {
   htmlFilename: postHtml.filename,
   htmlSize: postHtml.size,
   htmlUploadedAt: postHtml.uploadedAt,
+  htmlEncoding: postHtml.encoding,
 };
 
-function htmlOf(r: { htmlFilename: string | null; htmlSize: number | null; htmlUploadedAt: number | null }): PostHtmlMeta | null {
+function htmlOf(r: {
+  htmlFilename: string | null;
+  htmlSize: number | null;
+  htmlUploadedAt: number | null;
+  htmlEncoding: "identity" | "gzip" | null;
+}): PostHtmlMeta | null {
   if (r.htmlFilename === null) return null;
-  return { filename: r.htmlFilename, size: r.htmlSize ?? 0, uploadedAt: r.htmlUploadedAt ?? 0 };
+  return {
+    filename: r.htmlFilename,
+    size: r.htmlSize ?? 0,
+    uploadedAt: r.htmlUploadedAt ?? 0,
+    compressed: r.htmlEncoding === "gzip",
+  };
 }
 
 /** Escapes LIKE wildcards; use with `ESCAPE '\'` (TSD 7.2). */

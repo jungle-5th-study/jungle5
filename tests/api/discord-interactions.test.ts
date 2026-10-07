@@ -186,6 +186,15 @@ describe("정글5에 올리기 refusals (no post is created)", () => {
     return ephemeralText(res.json);
   };
 
+  // Exactly 10,000,000 bytes is accepted: see "a 10,000,000-byte attachment" below.
+  it("an attachment over 10 MB → pointed to the site editor (50 MB there), nothing downloaded", async () => {
+    const SITE = "10MB가 넘는 파일은 사이트 글쓰기에서 올려 주세요 (최대 50MB): https://jungle5.xyz/posts/new";
+    for (const size of [10_000_001, 30_000_000, 60_000_000]) {
+      expect(await refusal(messageCommand({ invoker: user.discordUserId, attachments: [{ filename: "big.html", size }] }))).toBe(SITE);
+    }
+    expect(calls).toEqual([]);
+  });
+
   it("someone else's message → refused", async () => {
     expect(await refusal(messageCommand({ invoker: user.discordUserId, author: "123456789012345678" }))).toBe(MESSAGES.notAuthor);
   });
@@ -195,7 +204,7 @@ describe("정글5에 올리기 refusals (no post is created)", () => {
     expect(await refusal(messageCommand({ invoker: inv, attachments: [] }))).toBe(MESSAGES.noHtml);
     expect(await refusal(messageCommand({ invoker: inv, attachments: [{ filename: "a.png", size: 10 }] }))).toBe(MESSAGES.noHtml);
     expect(
-      await refusal(messageCommand({ invoker: inv, attachments: [{ filename: "a.html", size: LIMITS.htmlMaxBytes + 1 }] })),
+      await refusal(messageCommand({ invoker: inv, attachments: [{ filename: "a.html", size: LIMITS.htmlDiscordMaxBytes + 1 }] })),
     ).toBe(MESSAGES.tooLarge);
     expect(
       await refusal(
@@ -285,8 +294,8 @@ describe("정글5에 올리기 success path", () => {
   });
 
   it("a 10,000,000-byte attachment (Discord's free cap) is stored in pieces and served byte for byte", async () => {
-    expect(MESSAGES.tooLarge).toBe("HTML 파일은 10MB 이하만 올릴 수 있어요");
-    const n = LIMITS.htmlMaxBytes;
+    expect(MESSAGES.tooLarge).toBe("10MB가 넘는 파일은 사이트 글쓰기에서 올려 주세요 (최대 50MB): https://jungle5.xyz/posts/new");
+    const n = LIMITS.htmlDiscordMaxBytes;
     const bytes = new Uint8Array(n).fill(0x61);
     const unit = new TextEncoder().encode("<p>격리 수준 😀</p>\n");
     for (let i = 0; i + unit.length <= n; i += unit.length) bytes.set(unit, i);
@@ -348,7 +357,7 @@ describe("정글5에 올리기 success path", () => {
   });
 
   it("a download larger than declared is refused", async () => {
-    const { fn, calls } = mockFetch({ [CDN]: "a".repeat(LIMITS.htmlMaxBytes + 1) });
+    const { fn, calls } = mockFetch({ [CDN]: "a".repeat(LIMITS.htmlDiscordMaxBytes + 1) });
     const app = makeApp({ fetch: fn });
     const user = await login(app);
     await signedCall(app, messageCommand({ invoker: user.discordUserId, attachments: [{ filename: "a.html", size: 10 }] }));
