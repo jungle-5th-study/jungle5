@@ -20,7 +20,7 @@ src/web/       React SPA: main.tsx, router.tsx, pages/, components/, lib/; tests
 migrations/    SQL migrations applied by wrangler (0000_init.sql has a hand-added seed row; 0001 is hand-written)
 tests/         unit/ (policy tables), api/ (integration: real workerd + local D1), migration tests, helpers.ts
 docs/          prd.md (product decisions D-xx), tsd.md (technical decisions TD-xx), ui.md (UI decisions UD-xx), operations.md
-scripts/       ops scripts (reorder-d1-dump.py for backup restore)
+scripts/       ops scripts (build-d1-restore.py turns a D1 export into importable restore SQL)
 ```
 
 ## Commands

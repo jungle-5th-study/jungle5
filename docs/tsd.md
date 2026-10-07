@@ -4,7 +4,7 @@ created: 2026-10-07
 updated: 2026-10-07
 type: technical-specification
 status: review
-version: "1.2"
+version: "1.3"
 prd: "prd.md"
 tags: [jungle5]
 ---
@@ -468,15 +468,18 @@ jungle5/
 - **backup.yml:** 매주 월요일 04:00 KST에 `wrangler d1 export jungle5-prod --remote`로 DB 전체를 내보내 gzip으로 압축한다. 결과는 **GitHub Actions 아티팩트**(`jungle5-d1-YYYY-MM-DD`)로 올리고 90일 뒤 GitHub가 자동 삭제한다. 성공·실패 모두 운영 웹훅에 실행 링크를 보낸다 (웹훅이 없으면 실패 시 GitHub 이메일).
 - **R2가 아닌 GitHub에 두는 이유:** 사용자가 R2를 활성화(결제 수단 등록)할 필요가 없다. 백업이 Cloudflare 밖에 있어 계정 문제에도 남는다. GitHub Free 비공개 저장소의 아티팩트 저장 용량은 500MB, Actions는 월 2,000분이다(공개 저장소는 Actions 분량 제한 없음)(2026-10-07 확인). 덤프가 커져서 90일치가 500MB에 가까워지면 R2로 옮긴다.
 - 내보내기는 실행 중에 다른 DB 요청을 막는다. 그래서 사용이 가장 적은 새벽에 돌린다. FTS 가상 테이블은 내보내기를 막기 때문에 쓰지 않는다 (TD-04와 맞물림).
-- **덤프를 그대로 부을 수 없다 (2026-10-07 리허설에서 발견):** 내보낸 파일은 테이블 이름순으로 "생성 → 데이터"를 반복한다. 그래서 `auth_sessions` 데이터가 `members` 테이블보다 먼저 들어가 `no such table` 오류가 난다. 복원 전에 `scripts/reorder-d1-dump.py`로 "PRAGMA → 모든 CREATE TABLE → 모든 INSERT → 인덱스" 순서로 다시 정렬한다. 문장 구분에는 SQLite 파서(`sqlite3.complete_statement`)를 써서, 본문 안의 `;`에 안전하다.
-- **큰 HTML 행 (2026-10-07 확인):** 내보낸 파일은 행마다 한 줄짜리 INSERT이고 HTML 조각은 한 줄이 약 2MB까지 된다(따옴표 이스케이프 포함). `reorder-d1-dump.py`는 이런 줄을 문제없이 처리한다(1.9MB·1.9MB·0.5MB 세 조각인 4.3MB 파일이 든 로컬 덤프: 0.07초, sqlite3로 복원한 바이트 일치). 그러나 **D1은 SQL 문장 하나를 100,000바이트까지만 받는다**(`SQLITE_TOOBIG`, 로컬 `wrangler d1 execute --file`에서 재현). 그래서 HTML이 약 100KB를 넘는 행이 있으면 `d1 execute --file=restore.sql`이 그 문장에서 실패한다(1.5MB 상한이던 0003부터 같은 문제). 원격에서는 아직 확인하지 않았다. 그런 덤프는 큰 문자열을 바인딩 값으로 넣는 방법(예: 로컬 sqlite3로 복원한 뒤 행을 나눠 옮기기)이 필요하다. 분기 리허설에서 큰 HTML 행이 있는 덤프로 확인한다.
+- **덤프를 그대로 부을 수 없다 (2026-10-07 리허설에서 발견):** 두 가지 이유가 있다.
+  1. 순서: 내보낸 파일은 테이블 이름순으로 "생성 → 데이터"를 반복해, 자식 행이 부모 테이블보다 먼저 온다 (`no such table`).
+  2. 크기: **D1은 SQL 문장 하나를 100,000바이트까지만 받는다** (`SQLITE_TOOBIG`). 내보낸 파일은 행마다 INSERT 하나라 약 100KB를 넘는 HTML 행이 있으면 실패한다 (0003부터 해당).
+- **해결: `scripts/build-d1-restore.py`** (2026-10-07). 덤프를 Python 내장 SQLite(문장 크기 제한 없음)에 먼저 읽은 뒤, "모든 CREATE TABLE → 모든 행 → 인덱스" 순서로 복원용 SQL을 다시 만든다. 긴 텍스트 값은 빈 값으로 INSERT한 뒤 `UPDATE … SET col = col || '<조각>'`으로 이어 붙이고, 모든 문장을 90,000바이트 이하로 유지한다. 행 단위로 다시 쓰므로 본문 안의 `;`·따옴표·줄바꿈에 안전하다. (이전 `reorder-d1-dump.py`는 순서만 고쳐서 큰 행을 처리하지 못해 대체했다.)
 - **복구 방법:**
   - 최근 7일 이내 문제: `wrangler d1 time-travel restore jungle5-prod --bookmark=…` (배포 직전 북마크는 deploy 실행 요약에 남아 있다).
-  - 그 이전 문제: ① 아티팩트를 받아 압축을 푼다 ② `python3 -I scripts/reorder-d1-dump.py backup.sql > restore.sql` ③ 새 D1을 만들고 `wrangler d1 execute <새 DB> --remote --file=restore.sql` ④ 아래 검사 쿼리로 확인 ⑤ `wrangler.jsonc`의 `database_id`를 새 DB로 바꿔 배포한다.
+  - 그 이전 문제: ① 아티팩트를 받아 압축을 푼다 ② `python3 -I scripts/build-d1-restore.py backup.sql > restore.sql` ③ 새 D1을 만들고 `wrangler d1 execute <새 DB> --remote --file=restore.sql` ④ 아래 검사 쿼리로 확인 ⑤ `wrangler.jsonc`의 `database_id`를 새 DB로 바꿔 배포한다.
   - 검사 쿼리: 테이블별 행 수 비교, `PRAGMA foreign_key_check` 결과 비어 있음, `d1_migrations`가 저장소의 마이그레이션 목록과 같음.
 - **리허설 기록:**
   - 2026-10-07: 운영 덤프(8KB) → 로컬 새 DB 복원 성공 (멤버·카테고리·세션·토큰 행 수 일치, FK 검사 통과). 같은 사본에 0001 마이그레이션 적용도 성공.
-  - 이후 분기마다 1회 반복한다.
+  - 2026-10-07: 3,000,050바이트 HTML(한글·이모지·따옴표 포함, 2조각)이 든 로컬 덤프(3.2MB) → 이전 스크립트는 `too long`으로 실패, `build-d1-restore.py`로 빈 로컬 D1에 복원 성공 (160문장, HTML 바이트 일치, FK 검사 통과, 테이블별 행 수 일치).
+  - 이후 분기마다 1회 반복한다. 큰 HTML 행이 있는 덤프로 확인한다.
 
 ### 9.4 관찰·오류 대응
 
@@ -525,6 +528,7 @@ GitHub Actions 한도 출처: [GitHub Actions billing](https://docs.github.com/e
 
 ## 13. 문서 이력
 
+- v1.3 (2026-10-07): 큰 HTML 행이 있는 백업 복원 해결 — `scripts/build-d1-restore.py` (9.3), 3MB HTML 리허설 기록.
 - v1.4 (2026-10-07): HTML 상한 10MB (TD-25 조각 저장, 마이그레이션 0004, 원본 파일 PUT, 3.2·5.1·6.2·7.1·9.3).
 - v1.3 (2026-10-07): HTML 공유 구현 (3.2 HTML 첨부·검색 제외·격리·Discord 메시지 명령, 4.2·7.1·9.5).
 - v1.2 (2026-10-07): TD-25~TD-27 HTML 공유 설계.

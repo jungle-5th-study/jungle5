@@ -76,7 +76,7 @@ main 보호 규칙 (D-26): PR 필수, 승인 1명 이상, `ci` 체크 통과 필
 
 ```sh
 gunzip backup.sql.gz
-python3 -I scripts/reorder-d1-dump.py backup.sql > restore.sql
+python3 -I scripts/build-d1-restore.py backup.sql > restore.sql
 pnpm exec wrangler d1 create jungle5-restore
 pnpm exec wrangler d1 execute jungle5-restore --remote --file=restore.sql
 ```
@@ -89,7 +89,7 @@ pnpm exec wrangler d1 execute jungle5-restore --remote --file=restore.sql
 
 확인이 끝나면 `wrangler.jsonc`의 `database_id`를 새 DB로 바꿔 배포한다.
 
-**큰 HTML 행 주의 (2026-10-07):** D1은 SQL 문장 하나를 100,000바이트까지만 받는다(`statement too long: SQLITE_TOOBIG`). 덤프의 INSERT는 행마다 한 줄이라 HTML이 약 100KB를 넘는 `post_html`·`post_html_chunks` 행은 위 `d1 execute --file`에서 실패한다. `reorder-d1-dump.py` 자체는 2MB짜리 줄도 문제없이 처리한다. 그런 덤프는 로컬 `sqlite3`로 먼저 복원해 확인한 뒤, 큰 값은 바인딩 값으로 넣는 방법으로 옮겨야 한다(TSD 9.3). 분기 리허설에서 이 경우를 확인한다.
+**큰 HTML 행 (2026-10-07):** D1은 SQL 문장 하나를 100,000바이트까지만 받는다(`SQLITE_TOOBIG`). `build-d1-restore.py`가 긴 값을 `UPDATE … ||` 조각으로 나눠 모든 문장을 90,000바이트 이하로 만들므로 위 절차를 그대로 쓰면 된다. 순서 문제(자식 행이 부모 테이블보다 먼저 오는 것)도 같은 스크립트가 해결한다(TSD 9.3).
 
 ## 5. D1 크기 지켜보기 (TD-25)
 
