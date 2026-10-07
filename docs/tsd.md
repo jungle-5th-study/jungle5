@@ -4,7 +4,7 @@ created: 2026-10-07
 updated: 2026-10-07
 type: technical-specification
 status: review
-version: "1.1"
+version: "1.2"
 prd: "prd.md"
 tags: [jungle5]
 ---
@@ -68,6 +68,9 @@ PRD가 정한 "무엇을"을 **어떻게** 만들지 정한다. 데이터 모델
 | TD-22 | 글 종류 제거 (PRD D-22) | API·화면에서 `kind`, `recommend_reason`, `question_status`, `resolution_summary`를 없앤다. DB 컬럼은 이번 배포에서 남겨 두고, 새 글은 `kind='note'`로 저장한다. 다음 배포에서 컬럼을 삭제하는 마이그레이션을 따로 한다 | 9.2의 "추가만 하는 변경" 원칙. 코드가 먼저 컬럼을 쓰지 않게 된 뒤에 지워야 배포 중 오류가 없다. `/api/home`의 질문 묶음과 `kind` 필터도 삭제 |
 | TD-23 | 스터디 멤버십 = Discord 역할 (PRD D-23, D-24) | `studies`에 `discord_role_id`(UNIQUE), `join_guide`를 추가한다. `study_members`는 직접 쓰지 않고, 로그인·24시간 재확인·`POST /api/me/refresh-roles` 때 그 회원의 역할 목록으로 다시 계산해 batch로 교체한다. `manager_id`와 참여·나가기·멤버 제외·관리자 넘기기 API, `MANAGER_MUST_TRANSFER`는 없앤다. 컬럼 삭제는 TD-22처럼 다음 배포에서 | 재확인 때 이미 멤버 객체(역할 포함)를 받아 오므로 Discord 호출이 늘지 않는다. 새로고침 API는 1분에 1번으로 제한해 Discord 호출 한도를 지킨다 |
 | TD-24 | 오픈 전 1회 정리 마이그레이션 | TD-22·TD-23의 컬럼 삭제를 다음 배포로 미루지 않고 이번 배포에서 한 번에 한다: `posts`의 `kind`·`recommend_reason`·`question_status`·`resolution_summary`, `studies.manager_id` 삭제, `studies.discord_role_id`·`join_guide` 추가 | 2026-10-07 운영 DB에 글 0개, 멤버 1명. 배포 중 몇 초의 오류를 감수하는 것이 두 번 배포보다 싸다. 오픈 후에는 9.2 원칙(추가만, 삭제는 두 번에 나눠)으로 돌아간다 |
+| TD-25 | HTML 저장 (D-30) | 새 테이블 `post_html`(post_id PK·FK CASCADE, html TEXT, text TEXT(검색용 추출 글자), filename, size, uploaded_at). 상한 1.5MB. D1에 저장해 백업에 자동 포함 | D1 값 상한 2MB (2026-10-07 확인). 기존 봇 파일 중 최대 310KB. 목록 쿼리가 큰 값을 읽지 않도록 posts와 분리 |
+| TD-26 | HTML 격리 | 업로드 HTML은 **별도 Worker `jungle5-html`(workers.dev, 다른 사이트)**에서 연다. 메인 API가 HMAC 서명한 1시간짜리 URL을 발급하고, 격리 Worker는 서명·만료를 확인한 뒤 같은 D1에서 읽어 응답한다. 응답에 `Content-Security-Policy: sandbox allow-scripts allow-popups allow-forms allow-modals` 등. 사이트에서는 `<iframe sandbox="allow-scripts allow-popups allow-forms allow-modals">`로 보여 주고, 메인 CSP에 `frame-src`로 그 주소만 허용 | 사용자 HTML은 스크립트를 실행하므로 로그인 쿠키·사이트와 완전히 분리한다 (githubusercontent.com과 같은 원리). workers.dev는 공용 접미사 목록에 있어 jungle5.xyz와 다른 사이트로 취급되고, 비용이 없다 |
+| TD-27 | Discord 메시지 메뉴 (D-32) | Discord 앱의 Interactions Endpoint를 `https://jungle5.xyz/discord/interactions`로 두고 Ed25519 서명을 검증한다. 메시지 명령 "정글5에 올리기"는 운영자용 관리 API로 등록(client credentials). 처리: 3초 안에 지연 응답 → 첨부 다운로드·검증·글 생성 → 후속 메시지로 결과, 원래 메시지에 링크 답글 | 상시 실행 봇(게이트웨이 연결)이 필요 없다. `DISCORD_PUBLIC_KEY`는 공개값이라 vars에 둔다 |
 
 ### 3.1 확인한 플랫폼 한도 (2026-10-07, Cloudflare 공식 문서)
 
@@ -503,6 +506,7 @@ GitHub Actions 한도 출처: [GitHub Actions billing](https://docs.github.com/e
 
 ## 13. 문서 이력
 
+- v1.2 (2026-10-07): TD-25~TD-27 HTML 공유 설계.
 - v1.1 (2026-10-07): 공개 저장소 전환 반영 (TD-16, 9.2 보호 규칙, 비용).
 - v1.0 (2026-10-07): M2 스터디 공간 백엔드 (3.2 M2 행, 6.4·7·7.1 갱신), 마이그레이션 0002(`members.discord_role_ids`).
 - v0.9 (2026-10-07): 도메인 jungle5.xyz 연결 (TD-08), workers.dev 301 이동.
