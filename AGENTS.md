@@ -13,6 +13,8 @@ Every merge to `main` deploys to production automatically (including remote D1 m
 ```text
 src/worker/    Hono app: index.ts (entry), app.ts (middleware, security headers), auth/, routes/,
                policies.ts (all authorization), db/schema.ts (Drizzle schema), lib/
+               discord/ (interactions endpoint + message command, TD-27)
+src/html-worker/  second Worker `jungle5-html` (wrangler.html.jsonc): serves uploaded HTML on an isolated origin (TD-26)
 src/shared/    zod schemas, API types, error codes, constants, ids.ts (UUIDv7), time.ts (KST helpers); shared with the SPA
 src/web/       React SPA: main.tsx, router.tsx, pages/, components/, lib/; tests live next to code (*.test.tsx, jsdom)
 migrations/    SQL migrations applied by wrangler (0000_init.sql has a hand-added seed row; 0001 is hand-written)
@@ -28,6 +30,7 @@ pnpm install
 cp .dev.vars.example .dev.vars   # keep ENV=test; set TOKEN_ENC_KEY from `openssl rand -base64 32`
 pnpm db:migrate:local            # local D1 only
 pnpm dev                         # http://localhost:8787 (test login form on the login page)
+pnpm dev:html                    # isolated HTML worker on http://localhost:8788 (second terminal; needs HTML_* in .dev.vars)
 pnpm typecheck                   # three tsc projects: worker/tests, web, node configs
 pnpm lint
 pnpm test                        # vitest projects "worker" (workerd + local D1) and "web" (jsdom)

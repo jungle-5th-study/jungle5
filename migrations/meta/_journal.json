@@ -22,6 +22,13 @@
       "when": 1791352682378,
       "tag": "0002_members_discord_role_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1791357239635,
+      "tag": "0003_post_html",
+      "breakpoints": true
     }
   ]
 }

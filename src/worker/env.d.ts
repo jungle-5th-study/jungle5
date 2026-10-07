@@ -12,6 +12,12 @@ declare namespace Cloudflare {
     DISCORD_ADMIN_ROLE_ID: string;
     /** base64 AES-256 key */
     TOKEN_ENC_KEY: string;
+    /** Origin of the isolated HTML worker `jungle5-html` (TD-26), e.g. https://jungle5-html.jungle5.workers.dev. Also in the CSP frame-src. */
+    HTML_ORIGIN: string;
+    /** Secret shared with the HTML worker: HMAC-SHA256 key for signed HTML URLs (TD-26). */
+    HTML_SIGNING_KEY: string;
+    /** Discord application public key (hex) for interaction signatures (TD-27). Public; empty = endpoint disabled. */
+    DISCORD_PUBLIC_KEY: string;
     /** Optional: alerts are skipped when unset. */
     ALERT_WEBHOOK_URL?: string;
   }

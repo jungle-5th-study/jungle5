@@ -224,6 +224,29 @@ export const comments = sqliteTable(
   ],
 );
 
+/**
+ * The one HTML file attached to a post (D-30, TD-25). Separate from `posts` so
+ * list queries never read the large value. Served only by the isolated worker
+ * (TD-26). Not searchable (TSD 3.2).
+ */
+export const postHtml = sqliteTable(
+  "post_html",
+  {
+    postId: text("post_id")
+      .primaryKey()
+      .references(() => posts.id, { onDelete: "cascade" }),
+    html: text("html").notNull(),
+    filename: text("filename").notNull(),
+    /** UTF-8 bytes of `html`. */
+    size: integer("size").notNull(),
+    uploadedAt: integer("uploaded_at").notNull(),
+    uploadedVia: text("uploaded_via", { enum: ["site", "discord"] }).notNull(),
+    /** The Discord message the file came from (D-32); makes the message command idempotent. */
+    discordMessageId: text("discord_message_id").unique(),
+  },
+  (t) => [check("post_html_uploaded_via_chk", sql`${t.uploadedVia} IN ('site', 'discord')`)],
+);
+
 export type MemberRow = typeof members.$inferSelect;
 export type PostRow = typeof posts.$inferSelect;
 export type CommentRow = typeof comments.$inferSelect;

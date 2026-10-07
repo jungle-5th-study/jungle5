@@ -16,3 +16,11 @@ TOKEN_ENC_KEY=replace-with-openssl-rand-base64-32
 
 # Discord webhook for the private ops channel. Leave empty to disable alerts.
 ALERT_WEBHOOK_URL=
+
+# Isolated HTML worker (TSD TD-26). Run it with `pnpm dev:html` (port 8788).
+HTML_ORIGIN=http://localhost:8788
+# Shared by both workers (the HTML worker reads this same .dev.vars). Generate: openssl rand -base64 32
+HTML_SIGNING_KEY=replace-with-openssl-rand-base64-32
+
+# Discord application public key (hex) for the interactions endpoint (TD-27). Empty = disabled.
+DISCORD_PUBLIC_KEY=

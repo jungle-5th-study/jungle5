@@ -146,3 +146,27 @@ export function canLinkPostToRound(
 
 /** Unlinking only needs authorship: losing the study role keeps old links (F-08). */
 export const canUnlinkPostFromRound = (actor: MaybeActor, post: OwnedContent) => isAuthor(actor, post);
+
+// ---- 첨부 HTML (D-30 ~ D-32) ----
+/** Attach, replace or remove a post's HTML file: the post's author (like editing it). */
+export const canEditPostHtml = (actor: MaybeActor, post: OwnedContent) => isAuthor(actor, post);
+/** Get a signed URL to view the HTML: whoever may see the post (TD-17 hidden rules). */
+export const canViewPostHtml = (actor: MaybeActor, post: HideableContent) => canViewContent(actor, post);
+/** Register the Discord message command (TD-27). */
+export const canManageDiscordCommands = (actor: MaybeActor) => isAdmin(actor);
+
+/**
+ * D-32 "정글5에 올리기": only the message's own author may post it, and only as
+ * a site member (logged in at least once, in the guild, not withdrawn).
+ * `actor` = the site member linked to the invoker's Discord id (null if none).
+ * Returns why it is refused, or null when allowed.
+ */
+export function discordUploadDenial(
+  actor: MaybeActor,
+  invokerDiscordId: string,
+  messageAuthorDiscordId: string,
+): "not_author" | "not_member" | null {
+  if (!invokerDiscordId || invokerDiscordId !== messageAuthorDiscordId) return "not_author";
+  if (!canCreatePost(actor)) return "not_member";
+  return null;
+}

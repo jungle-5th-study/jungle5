@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/worker/**/*", "src/shared/**/*", "tests/**/*"]
+  "include": ["src/worker/**/*", "src/html-worker/**/*", "src/shared/**/*", "tests/**/*"]
 }

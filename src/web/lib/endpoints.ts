@@ -8,6 +8,7 @@ import type {
   Me,
   Page,
   PostDetail,
+  PostHtmlUrl,
   PostListItem,
   Round,
   RoundDetail,
@@ -18,6 +19,7 @@ import type {
   CategoryPatchInput,
   CommentCreateInput,
   PostCreateInput,
+  PostHtmlInput,
   PostPatchInput,
   RoundCreateInput,
   RoundInfoPatchInput,
@@ -40,6 +42,8 @@ export const queryKeys = {
   posts: ["posts"] as const,
   postList: (filters: PostFilters) => ["posts", "list", filters] as const,
   post: (id: string) => ["posts", "detail", id] as const,
+  /** Signed URL of a post's HTML (TD-26); not under "posts" so list invalidations do not refetch it. */
+  postHtmlUrl: (id: string) => ["post-html-url", id] as const,
   linkableRounds: ["me", "linkable-rounds"] as const,
   studies: ["studies"] as const,
   studyList: ["studies", "list"] as const,
@@ -86,6 +90,12 @@ export const api = {
   deleteComment: (id: string) => request<void>(`/api/comments/${encodeURIComponent(id)}`, { method: "DELETE" }),
   setCommentHidden: (id: string, hidden: boolean) =>
     request<void>(`/api/comments/${encodeURIComponent(id)}/${hidden ? "hide" : "unhide"}`, { method: "POST" }),
+
+  // ---- attached HTML (D-30, TD-25, TD-26) ----
+  postHtmlUrl: (id: string) => request<PostHtmlUrl>(`/api/posts/${enc(id)}/html-url`),
+  putPostHtml: (id: string, input: PostHtmlInput) =>
+    request<PostDetail>(`/api/posts/${enc(id)}/html`, { method: "PUT", body: input }),
+  deletePostHtml: (id: string) => request<void>(`/api/posts/${enc(id)}/html`, { method: "DELETE" }),
 
   // ---- studies & rounds (M2) ----
   linkableRounds: () => request<{ items: LinkableRound[] }>("/api/me/linkable-rounds").then((r) => r.items),

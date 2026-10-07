@@ -47,6 +47,21 @@ export interface CategoryList {
   totalPosts: number;
 }
 
+/** An attached HTML file's metadata (D-30). The content itself is only served by the isolated worker (TD-26). */
+export interface PostHtmlMeta {
+  filename: string;
+  /** UTF-8 bytes */
+  size: number;
+  uploadedAt: number;
+}
+
+/** GET /api/posts/:id/html-url: a signed URL on the isolated HTML origin (TD-26). */
+export interface PostHtmlUrl {
+  url: string;
+  /** epoch ms */
+  expiresAt: number;
+}
+
 export interface PostListItem {
   id: string;
   title: string;
@@ -58,6 +73,8 @@ export interface PostListItem {
   /** The linked round (F-08). null when unlinked, or when its study is hidden from the viewer. */
   round: PostRound | null;
   commentCount: number;
+  /** The attached HTML file, if any (D-30). */
+  html: PostHtmlMeta | null;
   /** true only when the viewer may see hidden content (admin or author, TD-17). */
   hidden: boolean;
   createdAt: number;
@@ -86,6 +103,8 @@ export interface PostDetail {
   roundId: string | null;
   /** The linked round (F-08). null when unlinked, or when its study is hidden from the viewer. */
   round: PostRound | null;
+  /** The attached HTML file, if any (D-30). Open it via GET /api/posts/:id/html-url. */
+  html: PostHtmlMeta | null;
   hidden: boolean;
   createdAt: number;
   updatedAt: number;

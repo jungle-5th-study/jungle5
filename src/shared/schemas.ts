@@ -1,6 +1,6 @@
 // Input validation shared by the Worker (authoritative) and the SPA (UX).
 import { z } from "zod";
-import { LIMITS } from "./constants";
+import { HTML_EXTENSIONS, LIMITS } from "./constants";
 
 /** UUIDv7, normalized to lower case so the PK check in TD-13 is case-proof. */
 export const idSchema = z
@@ -43,6 +43,52 @@ export const categoryPatchSchema = z
   });
 export type CategoryPatchInput = z.infer<typeof categoryPatchSchema>;
 
+// ---- attached HTML file (D-30, TD-25) ----
+
+/** UTF-8 byte length of a string. */
+export function utf8ByteLength(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+/** True when `name` ends in .html/.htm (any case). */
+export function hasHtmlExtension(name: string): boolean {
+  const lower = name.toLowerCase();
+  return HTML_EXTENSIONS.some((ext) => lower.endsWith(ext) && lower.length > ext.length);
+}
+
+// A lone UTF-16 surrogate cannot be encoded as UTF-8; U+0000 means a binary file.
+// eslint-disable-next-line no-control-regex
+const NOT_TEXT = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\u0000/;
+
+export const htmlFilenameSchema = z
+  .string()
+  .trim()
+  .min(1, "필수 항목입니다")
+  .max(LIMITS.htmlFilenameMax, `${LIMITS.htmlFilenameMax}자 이하로 입력하세요`)
+  // eslint-disable-next-line no-control-regex
+  .refine((n) => !/[\\/\u0000-\u001f\u007f]/.test(n), "파일 이름에 쓸 수 없는 문자가 있습니다")
+  .refine(hasHtmlExtension, ".html 또는 .htm 파일만 올릴 수 있습니다");
+
+/**
+ * The file as text. The SPA reads it with `new TextDecoder("utf-8", { fatal: true })`
+ * so a non-UTF-8 file is rejected before upload; the server re-checks what JSON can carry.
+ */
+export const htmlContentSchema = z
+  .string()
+  .min(1, "빈 파일입니다")
+  .refine((h) => !NOT_TEXT.test(h), "UTF-8 텍스트 파일만 올릴 수 있습니다")
+  .refine(
+    (h) => utf8ByteLength(h) <= LIMITS.htmlMaxBytes,
+    `파일은 ${(LIMITS.htmlMaxBytes / 1_000_000).toFixed(1)}MB 이하만 올릴 수 있습니다`,
+  );
+
+/** PUT /api/posts/:id/html, and the optional `html` of POST /api/posts. */
+export const postHtmlSchema = z.object({
+  filename: htmlFilenameSchema,
+  html: htmlContentSchema,
+});
+export type PostHtmlInput = z.input<typeof postHtmlSchema>;
+
 // ---- posts (D-22: no kinds; a post is title/body/category/tags/links/round) ----
 const postFields = {
   title: requiredText(LIMITS.postTitleMax),
@@ -59,6 +105,8 @@ export const postCreateSchema = z.object({
   links: postFields.links.optional().default([]),
   /** Round link at creation time (F-08): the author must be a member of the round's study. */
   roundId: refIdSchema.nullable().optional(),
+  /** Attach an HTML file in the same (idempotent) create (D-30). Ignored on a replay. */
+  html: postHtmlSchema.optional(),
 });
 export type PostCreateInput = z.input<typeof postCreateSchema>;
 

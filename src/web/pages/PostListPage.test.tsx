@@ -24,6 +24,7 @@ const post: PostListItem = {
   roundId: null,
   round: null,
   commentCount: 2,
+  html: null,
   hidden: false,
   createdAt: Date.now() - 60_000 * 5,
   updatedAt: Date.now(),
@@ -60,6 +61,28 @@ describe("PostListPage", () => {
     expect(screen.getByText("#react #hooks")).toBeInTheDocument();
     expect(screen.getByText("댓글 2")).toBeInTheDocument();
     expect(screen.getByText("글 8개")).toBeInTheDocument();
+  });
+
+  it("marks posts with an HTML file", async () => {
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === "/api/categories") return Promise.resolve(json(cats));
+      return Promise.resolve(
+        json({ items: [post, { ...post, id: "p2", title: "HTML 글", html: { filename: "a.html", size: 10, uploadedAt: 1 } }], nextCursor: null }),
+      );
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter([{ path: "/posts", element: <PostListPage /> }], { initialEntries: ["/posts"] });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    const htmlRow = (await screen.findByRole("link", { name: "HTML 글" })).closest("article")!;
+    expect(within(htmlRow).getByTitle("HTML 파일: a.html")).toHaveTextContent("HTML");
+    const plainRow = screen.getByRole("link", { name: "React 훅 정리" }).closest("article")!;
+    expect(within(plainRow).queryByText("HTML")).toBeNull();
   });
 
   it("summarises a search and removes the tag filter with its chip", async () => {

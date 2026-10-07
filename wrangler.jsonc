@@ -24,12 +24,19 @@
       "migrations_dir": "migrations"
     }
   ],
-  // Non-secret configuration (TSD 4.2). Secrets are set with `wrangler secret put`.
+  // Non-secret configuration (TSD 4.2). Secrets are set with `wrangler secret put`:
+  // DISCORD_CLIENT_SECRET, TOKEN_ENC_KEY, ALERT_WEBHOOK_URL, HTML_SIGNING_KEY
+  // (HTML_SIGNING_KEY also on jungle5-html with the same value).
   "vars": {
     "ENV": "production",
     "APP_ORIGIN": "https://jungle5.xyz",
     "DISCORD_CLIENT_ID": "1557230146703069304",
     "DISCORD_GUILD_ID": "1272414440989392967",
-    "DISCORD_ADMIN_ROLE_ID": "1551814006254211143"
+    "DISCORD_ADMIN_ROLE_ID": "1551814006254211143",
+    // Isolated worker for uploaded HTML (TD-26, wrangler.html.jsonc). Also the CSP frame-src.
+    "HTML_ORIGIN": "https://jungle5-html.jungle5.workers.dev",
+    // Discord Developer Portal → General Information → Public Key (public, hex).
+    // Empty = POST /discord/interactions rejects everything (TD-27, docs/operations.md).
+    "DISCORD_PUBLIC_KEY": "45536beb469b4bd6ce5441d68031d67867abb302fb1dbdcd9e74648f7d284e24"
   }
 }

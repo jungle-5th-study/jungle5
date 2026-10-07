@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
-import type { Category, CategoryWithCount, LinkableRound, PostDetail } from "../../shared/api";
+import type { Category, CategoryWithCount, LinkableRound, PostDetail, PostHtmlMeta } from "../../shared/api";
 import type { FieldErrors } from "../../shared/errors";
 import { LIMITS } from "../../shared/constants";
 import { nameKey, uuidv7 } from "../../shared/ids";
@@ -14,6 +14,7 @@ import { ApiError, errorMessage, fieldError } from "../lib/api";
 import { clearDraft, latestNewPostDraft, loadDraft, saveDraft } from "../lib/drafts";
 import { api, queryKeys } from "../lib/endpoints";
 import { formatFull, formatRelative } from "../lib/format";
+import { formatBytes, HTML_MAX_LABEL, readHtmlFile, suggestedTitle, type HtmlFile } from "../lib/htmlFile";
 import { useSession } from "../lib/session";
 import { NotFoundPage } from "./NotFoundPage";
 
@@ -25,6 +26,11 @@ export interface PostFormValues {
   links: { url: string; label: string }[];
   /** Linked round (F-08); "" = none. Only sent on create; changed later on the post page. */
   roundId: string;
+  /**
+   * Name of the HTML file chosen when the draft was saved. The file itself is
+   * never put in localStorage (up to 1.5MB), so a restored draft asks for it again.
+   */
+  htmlFilename: string;
 }
 
 export const emptyPostValues = (): PostFormValues => ({
@@ -34,6 +40,7 @@ export const emptyPostValues = (): PostFormValues => ({
   tags: [],
   links: [],
   roundId: "",
+  htmlFilename: "",
 });
 
 function valuesFromPost(p: PostDetail): PostFormValues {
@@ -44,6 +51,7 @@ function valuesFromPost(p: PostDetail): PostFormValues {
     tags: p.tags,
     links: p.links.map((l) => ({ url: l.url, label: l.label })),
     roundId: p.round?.id ?? p.roundId ?? "",
+    htmlFilename: "",
   };
 }
 
@@ -178,6 +186,10 @@ export function PostForm({
   const [draftSaveFailed, setDraftSaveFailed] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(restoredAt);
   const now = useNow(15_000);
+  // Attached HTML (D-30): kept in memory only, never in the draft.
+  const [htmlFile, setHtmlFile] = useState<HtmlFile | null>(null);
+  const [removeHtml, setRemoveHtml] = useState(false);
+  const [introFilled, setIntroFilled] = useState(false);
   const submitted = useRef(false);
   const errorSummary = useRef<HTMLDivElement>(null);
 
@@ -202,15 +214,33 @@ export function PostForm({
   const categories = useQuery({ queryKey: queryKeys.categories, queryFn: api.categories });
 
   const save = useMutation({
-    mutationFn: (payload: PostCreateInput) => {
+    mutationFn: async (payload: PostCreateInput) => {
       if (mode === "new") return api.createPost(payload);
-      const { id: _id, ...patch } = payload;
-      return api.updatePost(postId, patch);
+      const { id: _id, html: _html, ...patch } = payload;
+      let detail: PostDetail;
+      try {
+        detail = await api.updatePost(postId, patch);
+      } catch (err) {
+        throw new SaveStepError("post", err);
+      }
+      // TD-25: the file is its own request, sent only after the text is saved.
+      try {
+        if (htmlFile) detail = await api.putPostHtml(postId, { filename: htmlFile.filename, html: htmlFile.html });
+        else if (removeHtml && original?.html) {
+          await api.deletePostHtml(postId);
+          detail = { ...detail, html: null };
+        }
+      } catch (err) {
+        throw new SaveStepError(htmlFile ? "html-put" : "html-delete", err, detail);
+      }
+      return detail;
     },
     onSuccess: async (detail) => {
       submitted.current = true;
       clearDraft(me.id, postId);
       queryClient.setQueryData(queryKeys.post(detail.id), detail);
+      // A replaced file gets a fresh signed URL (the old one may be cached for 5 minutes).
+      queryClient.removeQueries({ queryKey: queryKeys.postHtmlUrl(detail.id) });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: [...queryKeys.posts, "list"] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.home }),
@@ -220,10 +250,16 @@ export function PostForm({
       await navigate(`/posts/${detail.id}`, { replace: true });
       toast(mode === "new" ? "글을 등록했습니다" : "글을 저장했습니다");
     },
-    onError: (err) => {
+    onError: async (err) => {
       // Input stays as typed (and in the local draft); never shown as success.
-      setFieldErrors(err instanceof ApiError ? err.fields : {});
+      const cause = err instanceof SaveStepError ? err.cause : err;
+      setFieldErrors(cause instanceof ApiError ? cause.fields : {});
       errorSummary.current?.focus();
+      if (err instanceof SaveStepError && err.saved) {
+        // The text part was saved: show that state elsewhere, keep the form (and the file) here.
+        queryClient.setQueryData(queryKeys.post(err.saved.id), err.saved);
+        await queryClient.invalidateQueries({ queryKey: [...queryKeys.posts, "list"] });
+      }
     },
   });
 
@@ -233,7 +269,9 @@ export function PostForm({
     // A prefilled round that is not linkable (ended, not my study) is dropped, as the field shows.
     const linkable = queryClient.getQueryData<LinkableRound[]>(queryKeys.linkableRounds);
     const roundOk = !values.roundId || !linkable || linkable.some((r) => r.id === values.roundId);
-    const payload = toPayload(postId, roundOk ? values : { ...values, roundId: "" });
+    const base = toPayload(postId, roundOk ? values : { ...values, roundId: "" });
+    // New post: the file goes in the same create request (TD-25).
+    const payload = mode === "new" && htmlFile ? { ...base, html: { filename: htmlFile.filename, html: htmlFile.html } } : base;
     const errors = validate(payload);
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
@@ -247,6 +285,20 @@ export function PostForm({
   const err = (path: string) => fieldError(fieldErrors, path);
   const hasFieldErrors = Object.keys(fieldErrors).length > 0;
   const rootError = err("");
+  const stepError = save.error instanceof SaveStepError ? save.error : null;
+  const saveCause = stepError ? stepError.cause : save.error;
+
+  const pickHtml = (file: HtmlFile) => {
+    setHtmlFile(file);
+    setRemoveHtml(false);
+    set("htmlFilename", file.filename);
+    if (!values.title.trim()) set("title", suggestedTitle(file));
+    // The body is still required by the API (postCreateSchema): put a short intro the author can change.
+    if (!values.body.trim()) {
+      set("body", HTML_INTRO);
+      setIntroFilled(true);
+    }
+  };
 
   return (
     <form onSubmit={onSubmit} noValidate className="flex flex-col gap-6" aria-describedby="editor-status">
@@ -262,7 +314,15 @@ export function PostForm({
       )}
 
       <div ref={errorSummary} tabIndex={-1} className="outline-none empty:hidden" id="editor-status">
-        {save.isError && !hasFieldErrors && <Alert>저장하지 못했습니다: {errorMessage(save.error)}</Alert>}
+        {save.isError && stepError?.step.startsWith("html") && (
+          <Alert>
+            글 내용은 저장했지만 HTML 파일을 {stepError.step === "html-put" ? "올리지" : "지우지"} 못했습니다:{" "}
+            {errorMessage(saveCause)} 파일은 그대로 두었으니 다시 저장해 주세요.
+          </Alert>
+        )}
+        {save.isError && !stepError?.step.startsWith("html") && !hasFieldErrors && (
+          <Alert>저장하지 못했습니다: {errorMessage(saveCause)}</Alert>
+        )}
         {hasFieldErrors && (
           <Alert>
             입력값을 확인하세요.
@@ -305,7 +365,30 @@ export function PostForm({
         </div>
       </div>
 
-      <BodyField value={values.body} onChange={(b) => set("body", b)} error={err("body")} />
+      <HtmlField
+        file={htmlFile}
+        existing={removeHtml ? null : (original?.html ?? null)}
+        removed={removeHtml && Boolean(original?.html)}
+        draftFilename={htmlFile ? "" : values.htmlFilename}
+        error={firstPrefixed(fieldErrors, "html")}
+        onPick={pickHtml}
+        onRemove={() => {
+          setHtmlFile(null);
+          set("htmlFilename", "");
+          if (original?.html) setRemoveHtml(true);
+        }}
+        onUndoRemove={() => setRemoveHtml(false)}
+      />
+
+      <BodyField
+        value={values.body}
+        onChange={(b) => {
+          set("body", b);
+          setIntroFilled(false);
+        }}
+        error={err("body")}
+        hint={introFilled ? "본문은 꼭 있어야 해서 짧은 소개를 넣어 두었습니다. 자유롭게 바꾸세요." : undefined}
+      />
 
       <LinksField value={values.links} onChange={(links) => set("links", links)} errors={fieldErrors} />
 
@@ -335,6 +418,140 @@ export function PostForm({
 /** "방금", "3분 전", … for the draft status. */
 function savedAgo(ms: number, now: number): string {
   return now - ms < 60_000 ? "방금" : formatRelative(ms, now);
+}
+
+const HTML_INTRO = "HTML 파일로 정리한 내용입니다.";
+
+/** Which step of an edit save failed; `saved` is set once the text part went through. */
+class SaveStepError extends Error {
+  constructor(
+    readonly step: "post" | "html-put" | "html-delete",
+    override readonly cause: unknown,
+    readonly saved?: PostDetail,
+  ) {
+    super(step);
+    this.name = "SaveStepError";
+  }
+}
+
+/** "HTML 파일" (D-30): pick or drop one .html/.htm file; read as strict UTF-8 in the browser. */
+function HtmlField({
+  file,
+  existing,
+  removed,
+  draftFilename,
+  error,
+  onPick,
+  onRemove,
+  onUndoRemove,
+}: {
+  file: HtmlFile | null;
+  existing: PostHtmlMeta | null;
+  removed: boolean;
+  draftFilename: string;
+  error?: string;
+  onPick: (file: HtmlFile) => void;
+  onRemove: () => void;
+  onUndoRemove: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const id = useId();
+  const [dragging, setDragging] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [readError, setReadError] = useState<string | null>(null);
+
+  const read = async (f: File | undefined) => {
+    if (!f) return;
+    setReading(true);
+    setReadError(null);
+    const result = await readHtmlFile(f);
+    setReading(false);
+    if (result.ok) onPick(result.file);
+    else setReadError(result.error);
+  };
+
+  const attached = file ?? existing;
+  const choose = () => inputRef.current?.click();
+
+  return (
+    <section aria-labelledby={`${id}-label`} className="flex flex-col gap-2">
+      <h2 id={`${id}-label`} className="text-base font-bold text-text">
+        HTML 파일 <span className="text-sm font-normal text-muted">(선택, {HTML_MAX_LABEL} 이하 · UTF-8)</span>
+      </h2>
+      <input
+        ref={inputRef}
+        id={id}
+        type="file"
+        accept=".html,.htm,text/html"
+        className="sr-only"
+        aria-label="HTML 파일 선택"
+        tabIndex={-1}
+        onChange={(e) => {
+          void read(e.target.files?.[0]);
+          e.target.value = ""; // choosing the same file again still fires change
+        }}
+      />
+      {attached ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2">
+          <span className="rounded bg-accent-subtle px-1.5 py-0.5 text-xs font-semibold text-accent-subtle-text">HTML</span>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium" data-testid="html-attached">
+            {attached.filename}
+          </span>
+          <span className="text-xs text-muted">
+            {formatBytes(attached.size)}
+            {file && existing === null && !removed ? " · 저장하면 올라갑니다" : file ? " · 저장하면 바뀝니다" : ""}
+          </span>
+          <button type="button" className={btn.ghost} onClick={choose} disabled={reading}>
+            교체
+          </button>
+          <button type="button" className={btn.ghost} onClick={onRemove} disabled={reading}>
+            제거
+          </button>
+        </div>
+      ) : (
+        <div
+          className={`flex flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-6 text-center text-sm ${
+            dragging ? "border-accent bg-accent-subtle" : "border-border"
+          }`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            void read(e.dataTransfer.files[0]);
+          }}
+          data-testid="html-dropzone"
+        >
+          <p className="text-muted">HTML 파일을 여기에 끌어다 놓거나</p>
+          <button type="button" className={btn.secondary} onClick={choose} disabled={reading}>
+            {reading ? "읽는 중…" : "파일 선택"}
+          </button>
+          <p className="text-xs text-muted">글 화면 위쪽에 그대로 보입니다. 스크립트도 실행되지만 사이트와 분리된 곳에서 열립니다.</p>
+        </div>
+      )}
+      {removed && (
+        <p className="text-sm text-muted">
+          저장하면 HTML 파일이 삭제됩니다.{" "}
+          <button type="button" className={btn.link} onClick={onUndoRemove}>
+            되돌리기
+          </button>
+        </p>
+      )}
+      {draftFilename && !attached && (
+        <Alert kind="info">
+          임시저장에는 HTML 파일이 들어 있지 않습니다. &ldquo;{draftFilename}&rdquo;을(를) 다시 선택해 주세요.
+        </Alert>
+      )}
+      {(readError ?? error) && (
+        <p role="alert" className="text-sm text-danger">
+          {readError ?? error}
+        </p>
+      )}
+    </section>
+  );
 }
 
 function firstPrefixed(fields: FieldErrors, prefix: string): string | undefined {
@@ -772,7 +989,17 @@ function LinksField({
   );
 }
 
-function BodyField({ value, onChange, error }: { value: string; onChange: (v: string) => void; error?: string }) {
+function BodyField({
+  value,
+  onChange,
+  error,
+  hint,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  error?: string;
+  hint?: string;
+}) {
   const [tab, setTab] = useState<"write" | "preview">("write");
   const id = useId();
   const tabs = [
@@ -825,7 +1052,7 @@ function BodyField({ value, onChange, error }: { value: string; onChange: (v: st
         )}
       </div>
       <div className="mt-1 flex justify-between gap-2">
-        <p className="text-sm text-danger">{error}</p>
+        <p className={error ? "text-sm text-danger" : "text-xs text-muted"}>{error ?? hint}</p>
         <span className="shrink-0 text-xs text-muted">
           {value.length.toLocaleString()} / {LIMITS.postBodyMax.toLocaleString()}
         </span>

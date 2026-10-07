@@ -29,14 +29,41 @@ GitHub 저장소 시크릿:
 
 main 보호 규칙 (D-26): PR 필수, 승인 1명 이상, `ci` 체크 통과 필수. 공개 저장소라 무료 요금제에서도 쓸 수 있다 (D-25). 이 규칙과 별개로 `deploy.yml`은 테스트 작업이 통과해야만 배포한다.
 
+### 1.1 HTML 공유 설정 (D-30~D-32, TD-26·TD-27, 한 번)
+
+업로드한 HTML은 별도 Worker `jungle5-html`(설정 `wrangler.html.jsonc`, 주소 `https://jungle5-html.jungle5.workers.dev`)에서만 열린다. 메인 Worker의 `HTML_ORIGIN` 변수와 CSP `frame-src`가 이 주소를 가리킨다. 이 Worker에는 jungle5.xyz 경로를 붙이지 않는다.
+
+1. 서명 키를 만들어 **두 Worker에 같은 값으로** 넣는다. 한쪽만 바뀌면 HTML이 열리지 않는다(403).
+
+   ```sh
+   key=$(openssl rand -base64 32)
+   printf %s "$key" | pnpm exec wrangler secret put HTML_SIGNING_KEY
+   printf %s "$key" | pnpm exec wrangler secret put HTML_SIGNING_KEY -c wrangler.html.jsonc
+   unset key
+   ```
+
+   `jungle5-html` Worker가 아직 없으면 먼저 한 번 배포된 뒤(`deploy.yml`) 넣는다. 키를 바꾸면 이미 발급된 링크(최대 1시간)는 무효가 되고, 사이트에서 다시 열면 된다.
+2. Discord Developer Portal → General Information의 **Public Key**를 `wrangler.jsonc`의 `vars.DISCORD_PUBLIC_KEY`에 넣고 PR로 배포한다(공개값). 비어 있으면 `/discord/interactions`는 모든 요청을 401로 거절한다.
+3. 배포가 끝나면 같은 화면의 **Interactions Endpoint URL**에 `https://jungle5.xyz/discord/interactions`를 넣고 저장한다. Discord가 서명한 PING을 보내 확인한다(공개 키가 틀리면 저장되지 않는다).
+4. Installation(또는 OAuth2 URL Generator)에서 `applications.commands` 범위로 앱을 커뮤니티 서버에 설치한다. 봇 사용자(`bot` 범위)는 필요 없다.
+5. 운영자로 로그인한 브라우저 콘솔(사이트 탭)에서 한 번 실행해 메시지 명령 "정글5에 올리기"를 서버 명령으로 등록한다. 명령 정의를 바꿨을 때만 다시 실행한다.
+
+   ```js
+   await fetch("/api/admin/discord/commands", { method: "POST", headers: { "Content-Type": "application/json" } }).then((r) => r.json())
+   ```
+
+   성공하면 `{ command: { id, name, type: 3, guildId } }`. 실패하면 503과 Discord 응답 코드(예: 401이면 `DISCORD_CLIENT_SECRET` 확인).
+
+로컬 개발: `.dev.vars`에 `HTML_ORIGIN=http://localhost:8788`과 `HTML_SIGNING_KEY`를 넣고(`.dev.vars.example` 참고) 터미널 두 개에서 `pnpm dev`(8787)와 `pnpm dev:html`(8788)을 함께 띄운다. 두 프로세스는 기본 저장소 `.wrangler/state`의 같은 로컬 D1을 쓰고, HTML Worker도 같은 `.dev.vars`를 읽는다. Vite 플러그인의 보조 Worker(`auxiliaryWorkers`)는 자기 주소로 열리지 않아(서비스 바인딩 전용) iframe 출처로 쓸 수 없다.
+
 ## 2. 빌드 결과와 wrangler 설정
 
-`pnpm build` 뒤에는 wrangler 명령이 생성된 설정(`.wrangler/deploy/config.json` → `dist/jungle5/wrangler.json`)을 쓴다. 이 설정은 정적 자산 바인딩을 `dist/client`로 가리킨다. 원본은 언제나 `wrangler.jsonc`다.
+`pnpm build` 뒤에는 wrangler 명령이 생성된 설정(`.wrangler/deploy/config.json` → `dist/jungle5/wrangler.json`)을 쓴다. 이 설정은 정적 자산 바인딩을 `dist/client`로 가리킨다. 원본은 언제나 `wrangler.jsonc`다. `-c wrangler.html.jsonc`처럼 설정을 직접 주면 이 우회를 쓰지 않고 HTML Worker만 wrangler가 직접 묶는다(`pnpm exec wrangler deploy -c wrangler.html.jsonc --dry-run`으로 확인).
 
 ## 3. CI/CD
 
 - `ci.yml`: PR마다 타입 검사, 린트, 테스트.
-- `deploy.yml`: main에 push되면 테스트 → D1 Time Travel 북마크 기록 → 원격 마이그레이션 → 배포. 문서(`docs/**`, `*.md`)만 바뀐 push는 배포를 건너뛴다. 실패하면 운영 웹훅으로 알린다.
+- `deploy.yml`: main에 push되면 테스트 → D1 Time Travel 북마크 기록 → 원격 마이그레이션 → HTML Worker 배포(`wrangler deploy -c wrangler.html.jsonc`) → 메인 Worker 배포. 문서(`docs/**`, `*.md`)만 바뀐 push는 배포를 건너뛴다. 실패하면 운영 웹훅으로 알린다.
 - `backup.yml`: 매주 월요일 04:00 KST에 `d1 export` → gzip → GitHub Actions 아티팩트 `jungle5-d1-YYYY-MM-DD` (90일 보관). 성공·실패 모두 웹훅에 한 줄 보낸다.
 
 마이그레이션은 추가만 한다 (TSD 9.2). `migrations/0000_init.sql`에는 생성된 DDL 뒤에 손으로 넣은 시드 행("기타" 카테고리)이 있다.

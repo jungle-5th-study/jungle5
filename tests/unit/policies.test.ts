@@ -80,6 +80,22 @@ describe("policies (PRD 5.4)", () => {
     "admin",
   ]);
 
+  // 첨부 HTML (D-30 ~ D-32)
+  table("canEditPostHtml (author = communityMember)", (a) => P.canEditPostHtml(a, ownPost), ["communityMember"]);
+  table("canViewPostHtml (visible)", (a) => P.canViewPostHtml(a, visible), MEMBERS);
+  table("canViewPostHtml (hidden: admin + author only)", (a) => P.canViewPostHtml(a, hidden), ["communityMember", "admin"]);
+  table("canManageDiscordCommands", P.canManageDiscordCommands, ["admin"]);
+  table("discordUploadDenial (own message)", (a) => P.discordUploadDenial(a, "d1", "d1") === null, MEMBERS);
+  table("discordUploadDenial (someone else's message)", (a) => P.discordUploadDenial(a, "d1", "d2") === null, []);
+  it("discordUploadDenial reasons", () => {
+    expect(P.discordUploadDenial(actors.communityMember, "d1", "d2")).toBe("not_author");
+    expect(P.discordUploadDenial(actors.anonymous, "d1", "d2")).toBe("not_author");
+    expect(P.discordUploadDenial(actors.anonymous, "d1", "d1")).toBe("not_member");
+    expect(P.discordUploadDenial(actors.withdrawn, "d1", "d1")).toBe("not_member");
+    expect(P.discordUploadDenial(actors.nonMember, "d1", "d1")).toBe("not_member");
+    expect(P.discordUploadDenial(actors.communityMember, "", "")).toBe("not_author");
+  });
+
   // 운영자 전용
   table("canHide", P.canHide, ["admin"]);
   table("canManageCategory", P.canManageCategory, ["admin"]);

@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import type { PostDetail } from "../../shared/api";
 import { Comments } from "../components/Comments";
 import { Markdown } from "../components/Markdown";
+import { PostHtmlFrame } from "../components/PostHtmlFrame";
 import { PostRoundLink } from "../components/PostRoundLink";
 import { parseUrl, safeHref } from "../lib/urls";
 import { useToast } from "../components/toast";
@@ -83,7 +84,8 @@ function PostView({ post }: { post: PostDetail }) {
   const edited = post.updatedAt > post.createdAt;
 
   return (
-    <article className="flex flex-col gap-8">
+    // data-wide: with an embedded HTML file the app shell widens the column (960px) like round pages.
+    <article data-wide={post.html ? true : undefined} className="flex flex-col gap-8">
       <header className="flex flex-col gap-3">
         <p className={`flex flex-wrap items-center gap-x-1.5 gap-y-1 ${meta}`}>
           {post.hidden && <HiddenBadge />}
@@ -107,6 +109,8 @@ function PostView({ post }: { post: PostDetail }) {
         <PostRoundLink post={post} isAuthor={isAuthor} />
         {post.hidden && <Alert kind="info">운영자가 숨긴 글입니다. 운영자와 작성자 본인에게만 보입니다.</Alert>}
       </header>
+
+      {post.html && <PostHtmlFrame postId={post.id} title={post.title} meta={post.html} />}
 
       <div className="max-w-prose">
         <Markdown source={post.body} />

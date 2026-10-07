@@ -6,6 +6,7 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "vite dev",
+    "dev:html": "wrangler dev -c wrangler.html.jsonc --port 8788",
     "build": "vite build",
     "preview": "vite build && vite preview",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.web.json && tsc -p tsconfig.node.json",

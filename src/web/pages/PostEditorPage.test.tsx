@@ -3,7 +3,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CategoryWithCount, LinkableRound, Me } from "../../shared/api";
+import type { CategoryWithCount, LinkableRound, Me, PostDetail } from "../../shared/api";
+import { renderRoutes, stubFetch } from "../test/render";
 import { latestNewPostDraft, saveDraft } from "../lib/drafts";
 import { queryKeys } from "../lib/endpoints";
 import { SessionContext } from "../lib/session";
@@ -194,5 +195,154 @@ describe("PostEditorPage (new)", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
     const sent = JSON.parse(spy.mock.calls[0]![1]!.body as string) as Record<string, unknown>;
     expect(sent).not.toHaveProperty("roundId");
+  });
+});
+
+describe("PostEditorPage: HTML file (D-30)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const htmlFile = (content: string, name = "hooks.html") => new File([content], name, { type: "text/html" });
+
+  it("prefills title from <title> and the required body, and sends the file inside POST /api/posts", async () => {
+    const { spy, resolve } = deferredPostFetch();
+    const { user } = setup();
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile("<title>훅 총정리</title><p>본문</p>"));
+    expect(await screen.findByTestId("html-attached")).toHaveTextContent("hooks.html");
+    expect(screen.getByLabelText(/제목/)).toHaveValue("훅 총정리");
+    expect(screen.getByRole("textbox", { name: /본문/ })).toHaveValue("HTML 파일로 정리한 내용입니다.");
+    expect(screen.getByText(/짧은 소개를 넣어 두었습니다/)).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText(/카테고리/, { selector: "select" }), categories[0]!.id);
+    await user.click(screen.getByRole("button", { name: "등록" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    const sent = JSON.parse(spy.mock.calls[0]![1]!.body as string) as Record<string, unknown>;
+    expect(sent.html).toEqual({ filename: "hooks.html", html: "<title>훅 총정리</title><p>본문</p>" });
+    expect(sent.title).toBe("훅 총정리");
+    resolve(json(201, { id: sent.id }));
+    expect(await screen.findByText("상세 화면")).toBeInTheDocument();
+  });
+
+  it("falls back to the file name for the title and keeps a typed title", async () => {
+    const { user } = setup();
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile("<p>x</p>", "deep-dive.htm"));
+    await waitFor(() => expect(screen.getByLabelText(/제목/)).toHaveValue("deep-dive"));
+    await user.click(screen.getByRole("button", { name: "제거" }));
+    await user.clear(screen.getByLabelText(/제목/));
+    await user.type(screen.getByLabelText(/제목/), "내 제목");
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile("<title>다른 제목</title>"));
+    await screen.findByTestId("html-attached");
+    expect(screen.getByLabelText(/제목/)).toHaveValue("내 제목");
+  });
+
+  it("shows a clear error for a non-UTF-8 file and attaches nothing", async () => {
+    const { user } = setup();
+    await user.upload(
+      screen.getByLabelText("HTML 파일 선택"),
+      new File([new Uint8Array([0xc7, 0xd1, 0xb1, 0xdb])], "euckr.html", { type: "text/html" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("UTF-8로 저장된 HTML 파일만 올릴 수 있습니다");
+    expect(screen.queryByTestId("html-attached")).toBeNull();
+  });
+
+  it("keeps only the file name in the draft and asks for the file again", async () => {
+    const { user } = setup();
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), htmlFile("<title>t</title>"));
+    await waitFor(() => expect(latestNewPostDraft<{ htmlFilename: string }>(me.id)?.values.htmlFilename).toBe("hooks.html"));
+    expect(JSON.stringify(latestNewPostDraft(me.id))).not.toContain("<title>");
+  });
+});
+
+describe("PostEditorPage (edit) with HTML", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const postId = "0190a000-0000-7000-8000-0000000000e1";
+  const detail: PostDetail = {
+    id: postId,
+    title: "기존 글",
+    body: "소개",
+    category: { id: categories[0]!.id, name: "기타", archived: false },
+    author: { id: me.id, displayName: "tester", avatarUrl: null, withdrawn: false },
+    tags: [],
+    links: [],
+    roundId: null,
+    round: null,
+    html: { filename: "old.html", size: 2048, uploadedAt: 1 },
+    hidden: false,
+    createdAt: 1,
+    updatedAt: 2,
+    comments: [],
+  };
+
+  function setupEdit() {
+    return renderRoutes(
+      [
+        { path: "/posts/:id/edit", element: <PostEditorPage mode="edit" /> },
+        { path: "/posts/:id", element: <p>상세 화면</p> },
+      ],
+      `/posts/${postId}/edit`,
+      {
+        me,
+        data: [
+          [queryKeys.post(postId), detail],
+          [queryKeys.categories, categories],
+        ],
+      },
+    );
+  }
+
+  it("saves the text first, then PUTs the new file", async () => {
+    const calls: string[] = [];
+    stubFetch((url, init) => {
+      calls.push(`${init?.method} ${url}`);
+      if (init?.method === "PATCH") return json(200, { ...detail, title: "새 제목" });
+      if (init?.method === "PUT") return json(200, { ...detail, html: { filename: "new.html", size: 10, uploadedAt: 3 } });
+      return undefined;
+    });
+    const { user, router } = setupEdit();
+    expect(screen.getByTestId("html-attached")).toHaveTextContent("old.html");
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), new File(["<p>new</p>"], "new.html"));
+    await screen.findByText(/저장하면 바뀝니다/);
+    await user.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/posts/${postId}`));
+    expect(calls).toEqual([`PATCH /api/posts/${postId}`, `PUT /api/posts/${postId}/html`]);
+  });
+
+  it("keeps the form and the file when the file step fails, and says which step failed", async () => {
+    const bodies: unknown[] = [];
+    stubFetch((url, init) => {
+      if (init?.method === "PATCH") return json(200, detail);
+      if (init?.method === "PUT") {
+        bodies.push(JSON.parse(init.body as string));
+        return json(500, { error: { code: "INTERNAL", message: "서버 오류 (x1)" } });
+      }
+      return undefined;
+    });
+    const { user, router } = setupEdit();
+    await user.clear(screen.getByLabelText(/제목/));
+    await user.type(screen.getByLabelText(/제목/), "고친 제목");
+    await user.upload(screen.getByLabelText("HTML 파일 선택"), new File(["<p>new</p>"], "new.html"));
+    await screen.findByText(/저장하면 바뀝니다/);
+    await user.click(screen.getByRole("button", { name: "저장" }));
+    expect(await screen.findByText(/글 내용은 저장했지만 HTML 파일을 올리지 못했습니다: 서버 오류 \(x1\)/)).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe(`/posts/${postId}/edit`);
+    expect(screen.getByLabelText(/제목/)).toHaveValue("고친 제목");
+    expect(screen.getByTestId("html-attached")).toHaveTextContent("new.html");
+    expect(bodies).toEqual([{ filename: "new.html", html: "<p>new</p>" }]);
+  });
+
+  it("removes the file with DELETE after saving", async () => {
+    const calls: string[] = [];
+    stubFetch((url, init) => {
+      calls.push(`${init?.method} ${url}`);
+      if (init?.method === "PATCH") return json(200, detail);
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      return undefined;
+    });
+    const { user, router } = setupEdit();
+    await user.click(screen.getByRole("button", { name: "제거" }));
+    expect(screen.getByText(/저장하면 HTML 파일이 삭제됩니다/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/posts/${postId}`));
+    expect(calls).toEqual([`PATCH /api/posts/${postId}`, `DELETE /api/posts/${postId}/html`]);
   });
 });

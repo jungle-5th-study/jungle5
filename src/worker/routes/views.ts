@@ -1,8 +1,8 @@
 // Read-side query builders and row → API mappers shared by the routes.
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
-import type { Comment, MemberSummary, PostDetail, PostListItem, PostRound } from "../../shared/api";
+import type { Comment, MemberSummary, PostDetail, PostHtmlMeta, PostListItem, PostRound } from "../../shared/api";
 import type { Link } from "../../shared/schemas";
-import { categories, comments, members, posts, postTags, rounds, studies, tags } from "../db/schema";
+import { categories, comments, members, postHtml, posts, postTags, rounds, studies, tags } from "../db/schema";
 import { canViewStudy, type Actor } from "../policies";
 import type { Db } from "../types";
 
@@ -84,6 +84,21 @@ function roundOf(
   };
 }
 
+/**
+ * Metadata of the attached HTML (never the content); use with
+ * `.leftJoin(postHtml, eq(postHtml.postId, posts.id))`.
+ */
+const htmlColumns = {
+  htmlFilename: postHtml.filename,
+  htmlSize: postHtml.size,
+  htmlUploadedAt: postHtml.uploadedAt,
+};
+
+function htmlOf(r: { htmlFilename: string | null; htmlSize: number | null; htmlUploadedAt: number | null }): PostHtmlMeta | null {
+  if (r.htmlFilename === null) return null;
+  return { filename: r.htmlFilename, size: r.htmlSize ?? 0, uploadedAt: r.htmlUploadedAt ?? 0 };
+}
+
 /** Escapes LIKE wildcards; use with `ESCAPE '\'` (TSD 7.2). */
 export function likeContains(term: string): string {
   return `%${term.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
@@ -127,6 +142,7 @@ export async function listPosts(
       ...authorColumns,
       roundId: posts.roundId,
       ...roundColumns,
+      ...htmlColumns,
       hiddenAt: posts.hiddenAt,
       createdAt: posts.createdAt,
       updatedAt: posts.updatedAt,
@@ -137,6 +153,7 @@ export async function listPosts(
     .innerJoin(categories, eq(categories.id, posts.categoryId))
     .leftJoin(rounds, eq(rounds.id, posts.roundId))
     .leftJoin(studies, eq(studies.id, rounds.studyId))
+    .leftJoin(postHtml, eq(postHtml.postId, posts.id))
     .where(and(postVisibility(actor), ...filters))
     .orderBy(desc(posts.createdAt), desc(posts.id))
     .limit(limit + 1);
@@ -159,6 +176,7 @@ export async function listPosts(
       roundId: r.roundId,
       round: roundOf(actor, r),
       commentCount: Number(r.commentCount),
+      html: htmlOf(r),
       hidden: r.hiddenAt !== null,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
@@ -198,12 +216,14 @@ export async function loadPostDetail(db: Db, actor: Actor, id: string): Promise<
         categoryArchivedAt: categories.archivedAt,
         ...authorColumns,
         ...roundColumns,
+        ...htmlColumns,
       })
       .from(posts)
       .innerJoin(members, eq(members.id, posts.authorId))
       .innerJoin(categories, eq(categories.id, posts.categoryId))
       .leftJoin(rounds, eq(rounds.id, posts.roundId))
       .leftJoin(studies, eq(studies.id, rounds.studyId))
+      .leftJoin(postHtml, eq(postHtml.postId, posts.id))
       .where(and(eq(posts.id, id), postVisibility(actor))),
     db
       .select({ name: tags.name })
@@ -228,6 +248,7 @@ export async function loadPostDetail(db: Db, actor: Actor, id: string): Promise<
     links: parseLinks(p.links),
     roundId: p.roundId,
     round: roundOf(actor, row),
+    html: htmlOf(row),
     hidden: p.hiddenAt !== null,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,

@@ -12,14 +12,17 @@ Node.js 22 이상과 pnpm이 필요하다 (`corepack enable`이면 `package.json
 ```sh
 pnpm install
 cp .dev.vars.example .dev.vars
-openssl rand -base64 32          # 나온 값을 .dev.vars의 TOKEN_ENC_KEY에 넣는다
+openssl rand -base64 32          # 나온 값을 .dev.vars의 TOKEN_ENC_KEY에 넣는다 (HTML_SIGNING_KEY도 같은 방법으로 따로)
 pnpm db:migrate:local            # 로컬 D1에 스키마 생성
 pnpm dev                         # http://localhost:8787
+pnpm dev:html                    # 두 번째 터미널: 첨부 HTML을 여는 격리 Worker, http://localhost:8788
 ```
 
 `.dev.vars`는 `ENV=test`를 그대로 둔다. 커밋하지 않는다 (`.gitignore`에 있다).
 
 `pnpm dev`는 Vite와 Worker(workerd)를 한 주소에서 띄운다. 그래서 포트는 `.dev.vars`의 `APP_ORIGIN`(8787)과 같아야 한다. 개발 중에만 CSP 헤더에 고정 nonce를 더해 Vite의 HMR 코드가 돌게 한다. 운영 CSP는 그대로다 (`vite.config.ts`).
+
+글에 첨부한 HTML(D-30)은 `pnpm dev:html`로 띄운 별도 Worker(8788)에서 서명된 URL로 열린다 (TD-26). `.dev.vars`의 `HTML_ORIGIN=http://localhost:8788`과 `HTML_SIGNING_KEY`가 필요하고, 두 프로세스는 같은 로컬 D1을 쓴다. 이 Worker를 띄우지 않으면 글 화면의 HTML 칸만 비어 보인다.
 
 ### Discord 없이 로그인하기
 
@@ -38,6 +41,7 @@ curl -i -X POST http://localhost:8787/auth/test-login \
 | 명령 | 하는 일 |
 |---|---|
 | `pnpm dev` | Vite 개발 서버 + workerd의 Worker (로컬 D1은 `.wrangler/state`) |
+| `pnpm dev:html` | 첨부 HTML용 격리 Worker `jungle5-html` (8788, 같은 로컬 D1) |
 | `pnpm build` | SPA → `dist/client`, Worker → `dist/jungle5` |
 | `pnpm preview` | 빌드 후 운영 빌드를 로컬 workerd로 띄움 |
 | `pnpm typecheck` | Worker·테스트, SPA, 설정 파일 각각 `tsc` |

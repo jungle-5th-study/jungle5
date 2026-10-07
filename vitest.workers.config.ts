@@ -36,6 +36,11 @@ export default defineConfig({
             TOKEN_ENC_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             // Tests that exercise alerts set it explicitly with a stubbed fetch.
             ALERT_WEBHOOK_URL: "",
+            // Isolated HTML worker (TD-26). Test-only key.
+            HTML_ORIGIN: "https://jungle5-html.test",
+            HTML_SIGNING_KEY: "test-html-signing-key-0123456789abcdef",
+            // Interaction tests generate their own Ed25519 key pair and override this.
+            DISCORD_PUBLIC_KEY: "",
             TEST_MIGRATIONS: migrations,
           },
           // An empty database for the migration test (tests/migrations.test.ts),

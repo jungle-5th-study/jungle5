@@ -1,5 +1,8 @@
 # TSD 9.2 — on merge to main: test → record a D1 Time Travel bookmark →
-# apply migrations (remote) → deploy. Failures are posted to the ops webhook.
+# apply migrations (remote) → deploy the isolated HTML worker (jungle5-html,
+# TD-26) → deploy the main worker. Failures are posted to the ops webhook.
+# Secrets live on the workers, not here: HTML_SIGNING_KEY must be set on BOTH
+# workers with the same value (docs/operations.md).
 name: deploy
 
 on:
@@ -55,6 +58,11 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # Before the main worker, so signed URLs it hands out already resolve.
+      # An explicit -c bypasses the Vite build's redirected config (main worker only).
+      - name: Deploy HTML worker (jungle5-html)
+        run: pnpm exec wrangler deploy -c wrangler.html.jsonc
 
       - name: Deploy
         run: pnpm exec wrangler deploy

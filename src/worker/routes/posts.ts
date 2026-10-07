@@ -1,10 +1,19 @@
 // Posts (PRD F-03, F-04; TSD 7.1, 7.2, 8.1).
 import { and, eq, inArray, lt, or, sql, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
-import { LIMITS } from "../../shared/constants";
+import type { PostHtmlUrl } from "../../shared/api";
+import { HTML_URL_TTL_SECONDS, LIMITS } from "../../shared/constants";
 import { nameKey, uuidv7 } from "../../shared/ids";
-import { postCreateSchema, postListQuerySchema, postPatchSchema, postRoundSchema } from "../../shared/schemas";
-import { categories, posts, postTags, tags } from "../db/schema";
+import {
+  postCreateSchema,
+  postHtmlSchema,
+  postListQuerySchema,
+  postPatchSchema,
+  postRoundSchema,
+} from "../../shared/schemas";
+import { categories, postHtml, posts, postTags, tags } from "../db/schema";
+import { buildHtmlUrl } from "../lib/htmlSigning";
+import { upsertPostHtml } from "../lib/postHtml";
 import {
   AppError,
   forbidden,
@@ -18,10 +27,12 @@ import {
   canCreatePost,
   canDeletePost,
   canEditPost,
+  canEditPostHtml,
   canHide,
   canLinkPostToRound,
   canUnlinkPostFromRound,
   canViewContent,
+  canViewPostHtml,
   type Actor,
   type OwnedContent,
 } from "../policies";
@@ -170,6 +181,7 @@ export const postRoutes = new Hono<AppEnv>()
           updatedAt: now,
         }),
         ...tagStatements(db, input.id, uniqueTags(input.tags), now),
+        ...(input.html ? [upsertPostHtml(db, input.id, input.html, now, "site")] : []),
       ]);
     } catch (err) {
       // Concurrent duplicate submit: the PK rejected the second insert (TD-13).
@@ -253,6 +265,63 @@ export const postRoutes = new Hono<AppEnv>()
     }
     await db.update(posts).set({ roundId: input.roundId }).where(eq(posts.id, id));
     return c.json(await loadPostDetail(db, actor, id));
+  })
+
+  // Attached HTML (D-30, TD-25, TD-26). Body: { filename, html } (JSON, like
+  // every mutation: the CSRF guard requires application/json). Replaces any
+  // existing file. Counts as a content edit (updated_at).
+  .put("/:id/html", async (c) => {
+    const actor = c.get("actor");
+    const db = c.get("db");
+    const id = c.req.param("id");
+    const input = parseOrThrow(postHtmlSchema, await readJson(c));
+    const post = await loadOwnedPost(db, actor, id);
+    if (!canEditPostHtml(actor, post)) throw forbidden();
+    const now = c.get("deps").now();
+    await db.batch([
+      upsertPostHtml(db, id, input, now, "site"),
+      db.update(posts).set({ updatedAt: now }).where(eq(posts.id, id)),
+    ]);
+    return c.json(await loadPostDetail(db, actor, id));
+  })
+
+  .delete("/:id/html", async (c) => {
+    const actor = c.get("actor");
+    const db = c.get("db");
+    const id = c.req.param("id");
+    const post = await loadOwnedPost(db, actor, id);
+    if (!canEditPostHtml(actor, post)) throw forbidden();
+    const now = c.get("deps").now();
+    // Idempotent: 204 whether or not a file was attached; updated_at moves only if one was.
+    await db.batch([
+      db
+        .update(posts)
+        .set({ updatedAt: now })
+        .where(and(eq(posts.id, id), sql`EXISTS (SELECT 1 FROM post_html h WHERE h.post_id = ${id})`)),
+      db.delete(postHtml).where(eq(postHtml.postId, id)),
+    ]);
+    return c.body(null, 204);
+  })
+
+  // TD-26: a 1-hour signed URL on the isolated origin, for viewers who may see
+  // the post (TD-17). 404 when the post has no HTML. 1 query.
+  .get("/:id/html-url", async (c) => {
+    const actor = c.get("actor");
+    const id = c.req.param("id");
+    const row = await c
+      .get("db")
+      .select({ authorId: posts.authorId, hiddenAt: posts.hiddenAt, htmlPostId: postHtml.postId })
+      .from(posts)
+      .leftJoin(postHtml, eq(postHtml.postId, posts.id))
+      .where(eq(posts.id, id))
+      .get();
+    if (!row || !canViewPostHtml(actor, row) || row.htmlPostId === null) throw notFound();
+    const exp = Math.floor(c.get("deps").now() / 1000) + HTML_URL_TTL_SECONDS;
+    const body: PostHtmlUrl = {
+      url: await buildHtmlUrl(c.env.HTML_ORIGIN, c.env.HTML_SIGNING_KEY, id, exp),
+      expiresAt: exp * 1000,
+    };
+    return c.json(body);
   })
 
   .post("/:id/hide", async (c) => setPostHidden(c.get("db"), c.get("actor"), c.req.param("id"), c.get("deps").now()).then(() => c.body(null, 204)))

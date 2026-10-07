@@ -26,6 +26,15 @@ export function PostRow({
       meta={
         <MetaList
           items={[
+            post.html && (
+              <span
+                key="h"
+                title={`HTML 파일: ${post.html.filename}`}
+                className="rounded bg-accent-subtle px-1 text-[11px] leading-[18px] font-semibold text-accent-subtle-text"
+              >
+                HTML
+              </span>
+            ),
             showCategory && post.category.name,
             <AuthorName key="a" author={post.author} />,
             <Time key="t" ms={post.createdAt} />,

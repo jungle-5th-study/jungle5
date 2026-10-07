@@ -1,0 +1,24 @@
+{
+  // Isolated origin for user-uploaded HTML (TSD TD-26). Deliberately on
+  // workers.dev only (a public suffix, so a different site from jungle5.xyz):
+  // https://jungle5-html.jungle5.workers.dev. Never add a jungle5.xyz route.
+  // Deploy: pnpm exec wrangler deploy -c wrangler.html.jsonc (deploy.yml does it).
+  // Secret (same value as on the main worker):
+  //   pnpm exec wrangler secret put HTML_SIGNING_KEY -c wrangler.html.jsonc
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jungle5-html",
+  "main": "src/html-worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "workers_dev": true,
+  "preview_urls": false,
+  // Same database as the main worker; this worker only reads post_html.
+  // Migrations are owned by wrangler.jsonc (no migrations_dir here).
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jungle5-prod",
+      "database_id": "5a43b1f1-dabf-42c4-bcba-2db2cde4c60f"
+    }
+  ]
+}

@@ -25,7 +25,17 @@ export const LIMITS = {
   roundPostsMax: 200,
   /** Characters of a round's scope in the home "this week" list. */
   scopeExcerpt: 200,
+  // Attached HTML file (D-30, TD-25)
+  /** UTF-8 bytes. D1 rows are capped at 2,000,000 bytes; this leaves room for the other columns. */
+  htmlMaxBytes: 1_500_000,
+  htmlFilenameMax: 200,
 } as const;
+
+/** Accepted extensions of an attached HTML file (D-30), lower case. */
+export const HTML_EXTENSIONS = [".html", ".htm"] as const;
+
+/** Lifetime of a signed URL to the isolated HTML worker (TD-26). */
+export const HTML_URL_TTL_SECONDS = 60 * 60;
 
 /** POST /api/me/refresh-roles: at most once per this many seconds per member (TD-23). */
 export const REFRESH_ROLES_INTERVAL_SECONDS = 60;

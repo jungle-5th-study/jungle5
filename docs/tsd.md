@@ -68,8 +68,8 @@ PRD가 정한 "무엇을"을 **어떻게** 만들지 정한다. 데이터 모델
 | TD-22 | 글 종류 제거 (PRD D-22) | API·화면에서 `kind`, `recommend_reason`, `question_status`, `resolution_summary`를 없앤다. DB 컬럼은 이번 배포에서 남겨 두고, 새 글은 `kind='note'`로 저장한다. 다음 배포에서 컬럼을 삭제하는 마이그레이션을 따로 한다 | 9.2의 "추가만 하는 변경" 원칙. 코드가 먼저 컬럼을 쓰지 않게 된 뒤에 지워야 배포 중 오류가 없다. `/api/home`의 질문 묶음과 `kind` 필터도 삭제 |
 | TD-23 | 스터디 멤버십 = Discord 역할 (PRD D-23, D-24) | `studies`에 `discord_role_id`(UNIQUE), `join_guide`를 추가한다. `study_members`는 직접 쓰지 않고, 로그인·24시간 재확인·`POST /api/me/refresh-roles` 때 그 회원의 역할 목록으로 다시 계산해 batch로 교체한다. `manager_id`와 참여·나가기·멤버 제외·관리자 넘기기 API, `MANAGER_MUST_TRANSFER`는 없앤다. 컬럼 삭제는 TD-22처럼 다음 배포에서 | 재확인 때 이미 멤버 객체(역할 포함)를 받아 오므로 Discord 호출이 늘지 않는다. 새로고침 API는 1분에 1번으로 제한해 Discord 호출 한도를 지킨다 |
 | TD-24 | 오픈 전 1회 정리 마이그레이션 | TD-22·TD-23의 컬럼 삭제를 다음 배포로 미루지 않고 이번 배포에서 한 번에 한다: `posts`의 `kind`·`recommend_reason`·`question_status`·`resolution_summary`, `studies.manager_id` 삭제, `studies.discord_role_id`·`join_guide` 추가 | 2026-10-07 운영 DB에 글 0개, 멤버 1명. 배포 중 몇 초의 오류를 감수하는 것이 두 번 배포보다 싸다. 오픈 후에는 9.2 원칙(추가만, 삭제는 두 번에 나눠)으로 돌아간다 |
-| TD-25 | HTML 저장 (D-30) | 새 테이블 `post_html`(post_id PK·FK CASCADE, html TEXT, text TEXT(검색용 추출 글자), filename, size, uploaded_at). 상한 1.5MB. D1에 저장해 백업에 자동 포함 | D1 값 상한 2MB (2026-10-07 확인). 기존 봇 파일 중 최대 310KB. 목록 쿼리가 큰 값을 읽지 않도록 posts와 분리 |
-| TD-26 | HTML 격리 | 업로드 HTML은 **별도 Worker `jungle5-html`(workers.dev, 다른 사이트)**에서 연다. 메인 API가 HMAC 서명한 1시간짜리 URL을 발급하고, 격리 Worker는 서명·만료를 확인한 뒤 같은 D1에서 읽어 응답한다. 응답에 `Content-Security-Policy: sandbox allow-scripts allow-popups allow-forms allow-modals` 등. 사이트에서는 `<iframe sandbox="allow-scripts allow-popups allow-forms allow-modals">`로 보여 주고, 메인 CSP에 `frame-src`로 그 주소만 허용 | 사용자 HTML은 스크립트를 실행하므로 로그인 쿠키·사이트와 완전히 분리한다 (githubusercontent.com과 같은 원리). workers.dev는 공용 접미사 목록에 있어 jungle5.xyz와 다른 사이트로 취급되고, 비용이 없다 |
+| TD-25 | HTML 저장 (D-30) | 새 테이블 `post_html`(post_id PK·FK CASCADE, html TEXT, ~~text TEXT(검색용 추출 글자)~~, filename, size, uploaded_at). HTML 안의 글자는 검색하지 않는다 (3.2). 상한 1.5MB. D1에 저장해 백업에 자동 포함 | D1 값 상한 2MB (2026-10-07 확인). 기존 봇 파일 중 최대 310KB. 목록 쿼리가 큰 값을 읽지 않도록 posts와 분리 |
+| TD-26 | HTML 격리 | 업로드 HTML은 **별도 Worker `jungle5-html`(workers.dev, 다른 사이트)**에서 연다. 메인 API가 HMAC 서명한 1시간짜리 URL을 발급하고, 격리 Worker는 서명·만료를 확인한 뒤 같은 D1에서 읽어 응답한다. 응답에 `Content-Security-Policy: sandbox allow-scripts allow-popups allow-forms allow-modals allow-downloads` 등 (3.2). 사이트에서는 `<iframe sandbox="allow-scripts allow-popups allow-forms allow-modals allow-downloads">`(격리 Worker CSP sandbox와 같은 토큰, allow-same-origin·allow-top-navigation 없음)로 보여 주고, 메인 CSP에 `frame-src`로 그 주소만 허용 | 사용자 HTML은 스크립트를 실행하므로 로그인 쿠키·사이트와 완전히 분리한다 (githubusercontent.com과 같은 원리). workers.dev는 공용 접미사 목록에 있어 jungle5.xyz와 다른 사이트로 취급되고, 비용이 없다 |
 | TD-27 | Discord 메시지 메뉴 (D-32) | Discord 앱의 Interactions Endpoint를 `https://jungle5.xyz/discord/interactions`로 두고 Ed25519 서명을 검증한다. 메시지 명령 "정글5에 올리기"는 운영자용 관리 API로 등록(client credentials). 처리: 3초 안에 지연 응답 → 첨부 다운로드·검증·글 생성 → 후속 메시지로 결과, 원래 메시지에 링크 답글 | 상시 실행 봇(게이트웨이 연결)이 필요 없다. `DISCORD_PUBLIC_KEY`는 공개값이라 vars에 둔다 |
 
 ### 3.1 확인한 플랫폼 한도 (2026-10-07, Cloudflare 공식 문서)
@@ -118,6 +118,11 @@ C-08 규모(50명, 주 수십 건 작성)에서는 Free 한도의 1%도 쓰지 �
 | 스터디 멤버 표시 | 멤버 목록·수는 `study_members` 중 `is_guild_member=1`인 회원. 탈퇴자는 행이 지워지므로 나오지 않는다(혹시 남아도 `withdrawn: true`로 익명 표시) |
 | M2 권한 함수 추가 | `canViewStudy`(숨김이면 운영자만), `canChangeStudyRole`(운영자), `canDeleteRound`(스터디 멤버·운영자, 스터디 진행 중). `canLinkPostToRound`는 스터디·회차 상태도 받는다 |
 | M2 쿼리 수 (7.2) | 가장 많은 요청: 회차 상세 1(세션) + 1(회차·스터디·멤버 여부·비어 있음) + 5(병렬: 사람, 글 2, 댓글, 직전 회차) = 7, 24시간 재확인이 겹치면 9. 회차 연결 글 작성 8(재확인 시 10) |
+| HTML 첨부 (TD-25) | 마이그레이션 0003: `post_html(post_id PK FK→posts ON DELETE CASCADE, html, filename, size, uploaded_at, uploaded_via CHECK 'site'/'discord', discord_message_id UNIQUE NULL)`. 상한 **1,500,000 바이트(UTF-8)**: D1 행 상한 2,000,000 바이트 안. 확장자 `.html`/`.htm`(대소문자 무관), 파일 이름 1~200자(경로 구분자·제어 문자 불가). 올리기는 **JSON** `PUT /api/posts/:id/html {filename, html}`: CSRF 규칙(6.2)상 모든 변경 요청이 `application/json`이라 multipart를 쓰지 않는다. SPA는 파일을 `TextDecoder("utf-8", {fatal: true})`로 읽어 UTF-8이 아니면 막고, 서버는 짝 없는 서로게이트나 U+0000이 있으면 422. 다시 올리면 덮어쓴다(`discord_message_id`는 유지). `DELETE /api/posts/:id/html`은 파일이 없어도 204. 둘 다 작성자만(`canEditPostHtml`)이고 글 `updated_at`을 바꾼다. `POST /api/posts`도 선택 `html: {filename, html}`을 받아 글과 같은 batch로 저장한다(같은 id 재요청이면 무시하고 기존 글). 글 목록·상세에는 `html: {filename, size, uploadedAt} 또는 null`만 싣고 내용은 싣지 않는다(LEFT JOIN, 쿼리 수 그대로) |
+| HTML 검색 제외 (2026-10-07, 제품 결정) | **HTML 안의 글자는 검색하지 않는다.** `q`는 지금처럼 제목·본문만 찾고, 추출 글자 컬럼(`text`)도 두지 않는다. 서버 추출(HTMLRewriter)은 무료 플랜의 요청당 CPU 10ms를 넘길 위험이 있고, 클라이언트가 보낸 글자는 검증할 수 없다. PRD D-30의 "검색(HTML 안의 글자 포함)"은 이 결정으로 대체된다 |
+| HTML 격리 (TD-26) | 별도 Worker `jungle5-html`(`wrangler.html.jsonc`, 진입 `src/html-worker/index.ts`, 같은 D1 바인딩 `DB`, workers.dev만, 미리보기 URL 끔). `GET /v/:postId?exp=<unix 초>&sig=<hex>`만 받는다. HMAC-SHA256(`HTML_SIGNING_KEY`, `"{postId}.{exp}"`)를 WebCrypto `verify`로 상수 시간 비교해 틀리면 403, 그다음 만료면 410("링크가 만료됐습니다. 정글5에서 다시 열어 주세요"), 파일이 없으면 404, GET이 아니면 405, 다른 경로는 404. 응답 헤더: `Content-Type: text/html; charset=utf-8`, `Content-Security-Policy: sandbox allow-scripts allow-popups allow-forms allow-modals allow-downloads`(allow-same-origin 없음: 전체 화면으로 열어도 불투명 출처), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: private, max-age=300`, `X-Robots-Tag: noindex, nofollow`. 쿠키는 절대 설정하지 않는다. 숨김·탈퇴 판단은 하지 않는다(메인 API가 볼 수 있는 사람에게만 서명한다). 메인 API `GET /api/posts/:id/html-url` → `{url, expiresAt}`(epoch ms, 1시간)는 글을 볼 수 있는 사람(`canViewPostHtml` = TD-17)에게만 주고, HTML이 없으면 404. 쿼리 1개(+세션). 파일을 바꿔도 같은 URL은 브라우저 캐시 때문에 최대 5분 예전 내용을 보일 수 있다. 업로드 HTML은 불투명 출처라 `localStorage`·쿠키를 쓰는 기능은 동작하지 않는다(의도된 제약) |
+| Discord 메시지 명령 (TD-27) | `POST /discord/interactions`(`/api` 밖, 세션·CSRF 없음): 원문 본문과 `X-Signature-Timestamp`로 Ed25519 서명을 검증한다(`DISCORD_PUBLIC_KEY`, 비어 있으면 전부 401). PING → PONG. "정글5에 올리기"(type 3)만 처리하고 다른 명령은 임시(ephemeral) 안내, 다른 서버에서 오면 거절. 거절 순서(`discordUploadDenial`): 실행자 ≠ 메시지 작성자 → "본인이 올린 메시지만 올릴 수 있어요" → `.html/.htm` 첨부가 0개·2개 이상·1.5MB 초과 → 안내 → 사이트 회원 아님(로그인 기록 없음·서버 이탈·탈퇴) → "먼저 https://jungle5.xyz 에 로그인해 주세요" → 같은 메시지를 이미 올렸으면 기존 글 링크. 통과하면 바로 지연 임시 응답(type 5, flags 64)을 주고 `waitUntil`에서: 첨부 다운로드(https `cdn.discordapp.com`·`media.discordapp.net`만, 리디렉트 거절, 실제 크기 재확인) → UTF-8 엄격 디코드 → 제목은 `<title>`(앞 64KB만 선형 탐색, 기본 엔티티 해석) 또는 확장자를 뺀 파일 이름(200자) → 카테고리 "기타"(`name_key`), 서버가 만든 UUIDv7, 본문 "Discord에서 올린 HTML입니다. [원래 메시지](…)" → posts + post_html(`uploaded_via='discord'`, `discord_message_id`)을 한 batch로 → **원래 임시 응답을 먼저 수정**("등록했습니다. 카테고리·태그는 사이트에서 바꿀 수 있어요: 링크") → 공개 후속 메시지 "📄 {제목} — 정글5에서 보기: 링크"(`allowed_mentions: {parse: []}`, 제목의 Markdown 문자는 이스케이프). 지연 응답이 "생각 중"일 때 보낸 첫 후속 메시지는 그 응답을 대신하고 임시 속성을 물려받기 때문에 이 순서로 둔다. 실패하면 임시 응답을 한국어 오류로 고친다. 같은 메시지가 동시에 두 번 오면 UNIQUE 충돌로 batch가 되돌려지고 기존 글 링크를 준다. 후속 메시지는 상호작용 토큰으로 보내므로 봇 토큰이 필요 없다. **D-32의 "원래 메시지에 답글"과 다른 점:** 상호작용 웹훅은 임의의 메시지에 답글(`message_reference`)을 달 수 없어서, 공개 후속 메시지(명령 사용 표시가 붙음)로 대신한다. 명령 등록은 `POST /api/admin/discord/commands`(운영자, `canManageDiscordCommands`): client credentials(`applications.commands.update`, Basic 인증) 토큰으로 `POST /applications/{id}/guilds/{DISCORD_GUILD_ID}/commands {name, type: 3, contexts: [0], integration_types: [0]}`(같은 이름이면 덮어쓰고 다른 명령은 그대로) → `{command: {id, name, type, guildId}}`. Discord 오류는 503 `DISCORD_UNAVAILABLE`. Discord 호출은 `AppDeps.discordApp`(주입 가능한 `fetch` 위)으로 묶어 테스트가 네트워크를 쓰지 않는다 |
+| HTML 쿼리 수·CPU | `PUT /html`: 1(세션) + 1(글) + 1(batch) + 3(상세) = 6, 재확인이 겹치면 8. HTML을 붙인 `POST /api/posts`는 기존과 같다(batch에 문장 1개 추가). 상호작용: 2(회원·중복, 병렬), 백그라운드 2(카테고리, batch). CPU: 1.5MB JSON 파싱과 UTF-8 바이트 계산이 가장 큰 일이고 HTML은 파싱하지 않는다. 서명(HMAC·Ed25519)은 WebCrypto 내장 |
 
 ## 4. 시스템 구성
 
@@ -165,6 +170,9 @@ jungle5/
 | `ALERT_WEBHOOK_URL` | 비밀 | 운영 채널 Discord 웹훅 (TD-19). GitHub Actions 시크릿에도 같은 값 |
 | `TOKEN_ENC_KEY` | 비밀 | Discord 토큰 암호화용 AES-256 키 (base64) |
 | `APP_ORIGIN` | 변수 | 사이트 주소. OAuth 리다이렉트와 Origin 검사에 사용 |
+| `HTML_ORIGIN` | 변수 | 격리 HTML Worker 주소 (TD-26). 서명 URL과 CSP `frame-src`에 사용 |
+| `HTML_SIGNING_KEY` | 비밀 | 서명 URL용 HMAC 키. **메인과 `jungle5-html` 두 Worker에 같은 값** |
+| `DISCORD_PUBLIC_KEY` | 변수 | Discord 앱 공개 키(hex). 상호작용 서명 검증 (TD-27) |
 
 비밀값은 `wrangler secret`으로만 넣고 저장소에 커밋하지 않는다.
 
@@ -257,6 +265,8 @@ jungle5/
 | created_at, updated_at | INTEGER | |
 
 `CHECK ((post_id IS NULL) <> (round_id IS NULL))`: 둘 중 정확히 하나만 채운다. 글을 지우면 댓글이 DB에서 함께 지워진다 (D-19).
+
+**post_html** (TD-25, 3.2): `post_id PK FK→posts ON DELETE CASCADE`, `html`, `filename`, `size`(UTF-8 바이트), `uploaded_at`, `uploaded_via`(`site`/`discord`), `discord_message_id UNIQUE NULL`. 글당 최대 1개, 글을 지우면 함께 지워진다. 검색 대상이 아니다.
 
 **studies**
 
@@ -383,6 +393,11 @@ jungle5/
 | `GET /api/posts/:id` | 상세 + 댓글 | 멤버 |
 | `PATCH /api/posts/:id` · `DELETE /api/posts/:id` | 수정 · 삭제 | 작성자 |
 | `PUT /api/posts/:id/round` | 회차 연결·해제 `{ roundId \| null }` | 작성자 + 스터디 멤버 |
+| `PUT /api/posts/:id/html` · `DELETE /api/posts/:id/html` | HTML 파일 첨부·교체 `{ filename, html }` · 삭제 (3.2) | 작성자 |
+| `GET /api/posts/:id/html-url` | 격리 Worker의 1시간 서명 URL `{ url, expiresAt }` (TD-26) | 글을 볼 수 있는 멤버 |
+| `POST /api/admin/discord/commands` | Discord 메시지 명령 등록 (TD-27) | 운영자 |
+| `POST /discord/interactions` | Discord 상호작용 (Ed25519 서명, 세션 없음) | Discord |
+| `GET /v/:postId?exp=&sig=` (`jungle5-html`) | 업로드 HTML 응답 (TD-26) | 서명 |
 | `POST /api/posts/:id/comments` · `POST /api/rounds/:id/comments` | 댓글 작성 | 멤버 |
 | `PATCH /api/comments/:id` · `DELETE /api/comments/:id` | 댓글 수정 · 삭제 | 작성자 |
 | `POST /api/{posts\|comments\|studies}/:id/hide` · `/unhide` | 숨김 처리 | 운영자 |
@@ -468,9 +483,9 @@ jungle5/
 
 ### 9.5 보안 헤더
 
-모든 응답에 아래 헤더를 붙인다.
+모든 응답에 아래 헤더를 붙인다. 격리 HTML Worker(`jungle5-html`)의 헤더는 3.2 "HTML 격리"를 따른다.
 
-- `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`
+- `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https:; connect-src 'self'; frame-src <HTML_ORIGIN>; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` (`frame-src`는 격리 HTML Worker 주소만 허용, TD-26. `HTML_ORIGIN`이 비었거나 잘못되면 `'none'`)
 - `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`
 
 `img-src https:`는 TD-18(외부 이미지)과 Discord 아바타 때문이다. 스크립트는 자체 번들만 허용하므로, Markdown 정화가 뚫려도 외부 스크립트는 실행되지 않는 이중 방어가 된다.
@@ -506,6 +521,7 @@ GitHub Actions 한도 출처: [GitHub Actions billing](https://docs.github.com/e
 
 ## 13. 문서 이력
 
+- v1.3 (2026-10-07): HTML 공유 구현 (3.2 HTML 첨부·검색 제외·격리·Discord 메시지 명령, 4.2·7.1·9.5).
 - v1.2 (2026-10-07): TD-25~TD-27 HTML 공유 설계.
 - v1.1 (2026-10-07): 공개 저장소 전환 반영 (TD-16, 9.2 보호 규칙, 비용).
 - v1.0 (2026-10-07): M2 스터디 공간 백엔드 (3.2 M2 행, 6.4·7·7.1 갱신), 마이그레이션 0002(`members.discord_role_ids`).
