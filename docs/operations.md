@@ -2,6 +2,28 @@
 
 운영 환경 설정, 배포, 백업·복구 절차다. 기여만 한다면 읽지 않아도 된다. 운영 계정(Cloudflare, Discord 애플리케이션, GitHub Organization 설정)은 메인테이너만 다룬다. 설계 근거는 [TSD](tsd.md) 9절에 있다.
 
+## 0. 현재 운영 상태 (2026-10-08 기준)
+
+비밀값의 **값**은 여기 적지 않는다. 이름과 위치만 적는다.
+
+| 항목 | 상태 |
+|---|---|
+| 사이트 | https://jungle5.xyz (Worker `jungle5`, 사용자 지정 도메인). 예전 `jungle5.jungle5.workers.dev`는 301로 이동 (TD-08) |
+| HTML 격리 | Worker `jungle5-html` → https://jungle5-html.jungle5.workers.dev (TD-26) |
+| DB | D1 `jungle5-prod` (`5a43b1f1-dabf-42c4-bcba-2db2cde4c60f`), 마이그레이션 0000~0005 적용 |
+| Cloudflare 계정 | 소유자 leorivk (Free 플랜). wrangler는 소유자 PC에서 OAuth 로그인 |
+| 도메인 | `jungle5.xyz` — 가비아 등록 (2026-10-07, 연 3,300원, **만료 2027-10-07**, 자동 갱신 여부는 가비아에서 확인). 네임서버 `athena.ns.cloudflare.com` / `woz.ns.cloudflare.com` (Cloudflare Free 존) |
+| 저장소 | `jungle-5th-study/jungle5` (공개, MIT). 이전 비공개 저장소 `leorivk/jungle5`는 보관(archive) — 이력 보존용, 배포 안 함 |
+| main 보호 | 저장소 ruleset "main 보호 (D-26)": PR 필수, 승인 1명, `ci` 통과, 강제 push·삭제 금지. 예외: 팀 `release-owner`(leorivk)만 직접 push (D-26) |
+| 팀 | `maintainers` (5명: leorivk, hyunS00, jun9898, kmando01, minit97) — 저장소 maintain 권한. `release-owner` (leorivk) — admin |
+| Discord 앱 | Jungle5 (`1557230146703069304`). OAuth Redirects: `https://jungle5.xyz/auth/callback`, `https://jungle5.jungle5.workers.dev/auth/callback`, `http://localhost:8787/auth/callback`. Interactions Endpoint: `https://jungle5.xyz/discord/interactions`. 서버에 `applications.commands`로 설치됨. 메시지 명령 "정글5에 올리기" 등록됨 (명령 ID `1557296026719887403`) |
+| Discord 서버 | "정글 밖에서 살아남기" (`1272414440989392967`). 운영자 역할 "방장" (`1551814006254211143`). 스터디 역할: DDIA `1498569425777983538`, CKAD `1540915074955218965`, AI Engineering `1540915608663752814` |
+| Worker 비밀값 (`jungle5`) | `DISCORD_CLIENT_SECRET`, `TOKEN_ENC_KEY`, `HTML_SIGNING_KEY` (`jungle5-html`과 같은 값). `ALERT_WEBHOOK_URL`은 아직 없음 |
+| Worker 비밀값 (`jungle5-html`) | `HTML_SIGNING_KEY` |
+| GitHub Actions 비밀값 | `CLOUDFLARE_API_TOKEN` (Workers Scripts·D1 Edit), `CLOUDFLARE_ACCOUNT_ID`. `ALERT_WEBHOOK_URL` 없음 → 실패 알림은 GitHub 이메일로만 |
+| 백업 | `backup.yml` 매주 월 04:00 KST → GitHub 아티팩트 90일. 2026-10-07 수동 실행·복원 리허설 성공 |
+| 보류 | Discord 포럼 → 이슈 (D-28), 사이트 지식 AI 연동 (D-27②), 스프린트 관리 (D-29), 운영 알림 웹훅 |
+
 ## 1. 운영 환경 처음 설정 (한 번)
 
 ```sh
